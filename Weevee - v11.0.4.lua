@@ -4250,7 +4250,6 @@ function SetDivide()
 				plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
 				plot:SetTerrainType(transTerrain, false, false);
 			end
-			if cfg.kind ~= "peaks" then
 			for _, x in ipairs(snowCols) do
 				local plot = Map.GetPlot(x, y)
 				if plot:IsWater() then
@@ -4281,7 +4280,6 @@ function SetDivide()
 						end
 					end
 				end
-			end
 			end
 		end
 	end
@@ -4485,17 +4483,14 @@ end
 ------------------------------------------------------------------------------
 function FillMireSkip(iW)
 	local skip = {};
-	local cfg = GetBarrierConfig();
 	local cols = GetSnowWrapColumns(iW);
-	if cfg == nil or cfg.kind ~= "peaks" then
-		local ci = 1;
-		while ci <= #cols do
-			skip[cols[ci]] = true;
-			ci = ci + 1;
-		end
+	local ci = 1;
+	while ci <= #cols do
+		skip[cols[ci]] = true;
+		ci = ci + 1;
 	end
 	cols = GetSnowWrapTundraColumns(iW);
-	local ci = 1;
+	ci = 1;
 	while ci <= #cols do
 		skip[cols[ci]] = true;
 		ci = ci + 1;
