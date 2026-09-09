@@ -1,48 +1,73 @@
 Weevee version bump
 ===================
 
-When the user says to bump the version, follow this file. Do every step
-in the same bump. Skipping any one causes mismatched copies in play.
+When the user says to bump the version, follow this file.
 
-GitHub zip folder name = GitHub repo name. The agent CAN rename the
-repo from here with `gh repo rename` (old URL redirects). The user must
-rename the local Steam folder in Explorer afterward — do not move the
-Cursor workspace folder from under the editor.
+The repo is the source of truth and is NEVER renamed or restamped. A bump
+does not touch the playable files here: no git mv, no repo rename, no
+in-game title edit committed. Instead the bump builds a stamped copy
+outside the repo, in Assets/Maps, plus a zip to hand out.
 
 Current version: 11.0.5
 Next version:    11.0.6   (set this as current after a successful bump)
 
+The ledger lines above are the only thing in this repo a bump changes.
+
 Names for version X.Y.Z
 -----------------------
-In-game title:  Weevee Map X.Y.Z
-Lua file:       Weevee - vX.Y.Z.lua
-GitHub repo:    Weevee-vX.Y.Z-Map
-Steam folder:   Weevee vX.Y.Z Map
-  (path: ...\Sid Meier's Civilization V\Assets\Maps\<Steam folder>\)
+In-game title:    WvE Map X.Y.Z
+Release folder:   wve_map_glossen_vX.Y.Z
+Release lua:      wve_map_glossen_vX.Y.Z.lua
+Release zip:      wve_map_glossen_vX.Y.Z.zip
+Both land in:     ...\Sid Meier's Civilization V\Assets\Maps\
+                  (the directory above this repo)
+
+Repo lua stays "Weevee - v11.0.5.lua" forever. That filename is only a
+handle for the build script; it is not the shipped name and does not
+track the version.
 
 Agent steps (in order)
 ----------------------
 1. Confirm the new version number with the user if they did not give one.
    Default next is the "Next version" line above.
-2. Update GetMapScriptInfo Name in the map lua to:
-     [COLOR_HIGHLIGHT_TEXT] Weevee Map X.Y.Z [ENDCOLOR]
-3. git mv the map lua:
-     Weevee - vOLD.lua  ->  Weevee - vX.Y.Z.lua
-4. Update this file: set Current version, set Next version (patch +1).
-5. Commit ALL playable map changes in that bump (not only the rename),
-   message focused on why, then push to origin.
-6. gh repo rename Weevee-vX.Y.Z-Map
-   then: git remote set-url origin https://github.com/brunotho/Weevee-vX.Y.Z-Map.git
-   Do not change git config. Do not force-push. Do not --amend unless
-   the commit protocol allows it.
-7. Tell the user to rename the Steam folder in Explorer to:
-     Weevee vX.Y.Z Map
-   and to reopen the project from that folder if Cursor loses the root.
+2. Commit any playable map changes that belong in this bump, message
+   focused on why, then push to origin. Do this BEFORE building, so the
+   release is cut from what is actually pushed.
+3. Build the release from inside this repo:
+
+     C:\Users\lucas\weevee-tools\luaenv\Scripts\python.exe ^
+       C:\Users\lucas\weevee-tools\bump.py X.Y.Z
+
+   It copies every .lua out to Assets/Maps/wve_map_glossen_vX.Y.Z/,
+   renames the map lua, stamps the version into it, syntax-checks the
+   whole release against Lua 5.1, and writes the zip. If anything fails
+   to parse it deletes the folder and ships nothing.
+
+   Flags: --only-map excludes "oceanwve v2.0.lua" (a separate map script
+   that shares the DEF modules); --force overwrites an existing release.
+4. Update the ledger above: set Current version, set Next version (patch +1).
+   Commit and push that change.
+5. Tell the user the folder and zip are in Assets/Maps, and that the map
+   appears in-game as "WvE Map X.Y.Z".
 
 Notes
 -----
-- Download ZIP unpacks as Weevee-vX.Y.Z-Map-main. That is the folder
-  people copy into Maps. If the folder name does not match the version
-  they agreed to play, it is the wrong copy.
-- Local uncommitted edits are invisible to everyone else until step 5.
-- Do not bump by only editing the in-game title.
+- Players load the release FOLDER, not this repo. If the folder name does
+  not match the version they agreed to play, it is the wrong copy.
+- The zip unpacks to wve_map_glossen_vX.Y.Z/ — that folder is dropped
+  straight into Assets/Maps.
+- Do not change git config. Do not force-push. Do not --amend unless the
+  commit protocol allows it.
+- Local uncommitted edits are invisible to everyone else until step 2,
+  but the build in step 3 reads the working tree, so an uncommitted edit
+  WILL ship in the zip. Keep step 2 before step 3.
+
+Tooling (lives outside the repo, in C:\Users\lucas\weevee-tools)
+---------------------------------------------------------------
+  luaenv\      Python venv with lupa; provides a real Lua 5.1 parser
+  luacheck.py  syntax-check .lua files    (python luacheck.py .)
+  bump.py      build a stamped release    (python bump.py X.Y.Z)
+
+Lua 5.1 is what Civ V embeds, so luacheck catches the parse errors the
+game would hit on load. It cannot catch runtime errors: Map, GameInfo,
+PlotTypes and friends only exist inside the game.
