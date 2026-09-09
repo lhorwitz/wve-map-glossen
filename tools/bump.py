@@ -34,17 +34,22 @@ def release_name(version):
     return f"wve_map_glossen_v{version}"
 
 
+# The repo carries "(dev)" where a release carries a version, so both forms
+# have to be recognised; a release is always stamped with the real version.
+VERSION_OR_DEV = r"(?:\d+\.\d+\.\d+|\(dev\))"
+
+
 def stamp(source, version):
     """Rewrite the version-bearing strings. Returns (text, replacements_made)."""
-    # In-game title + the load banner: "Weevee Map 11.0.5" -> "WvE Map 11.0.6".
-    source, title_hits = re.subn(r"(?:Weevee|WvE) Map \d+\.\d+\.\d+",
+    # In-game title + the load banner: "WvE Map (dev)" -> "WvE Map 11.0.6".
+    source, title_hits = re.subn(r"(?:Weevee|WvE) Map " + VERSION_OR_DEV,
                                  f"WvE Map {version}", source)
-    # Debug log banner: WeeveeDbg("script loaded 11.0.5").
-    source, banner_hits = re.subn(r"script loaded \d+\.\d+\.\d+",
+    # Debug log banner: WeeveeDbg("script loaded (dev)").
+    source, banner_hits = re.subn(r"script loaded " + VERSION_OR_DEV,
                                   f"script loaded {version}", source)
     if title_hits == 0:
         raise SystemExit(
-            "ERROR: found no 'Weevee Map X.Y.Z' / 'WvE Map X.Y.Z' string to stamp.\n"
+            "ERROR: found no 'WvE Map X.Y.Z' or 'WvE Map (dev)' string to stamp.\n"
             "       The map would ship without a version in its name. Fix the\n"
             "       pattern in tools/bump.py before releasing."
         )
