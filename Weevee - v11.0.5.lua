@@ -859,6 +859,9 @@ function AssignStartingPlots:ProcessResourceList(frequency, impact_table_number,
 						frequency = frequency * 0.68;
 					end
 					break
+				elseif resources_to_place[i][1] == self.iron_ID then
+					frequency = frequency * 0.8;
+					break
 				end
 				i = i + 1;
 			end
@@ -3181,6 +3184,8 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				if cfg.kind == "desert" then
 					lakeSize = 5 + Map.Rand(8, "Snow Wrap Lake Size");
 					circular = (Map.Rand(4, "Snow Wrap Lake Shape") == 0);
+				elseif cfg.kind == "wetland" then
+					lakeSize = 2 + Map.Rand(5, "Snow Wrap Lake Size");
 				end
 				local wantIsland = circular and lakeSize >= 6 and (Map.Rand(2, "Snow Wrap Lake Island") == 0);
 				local seedX, seedY;
@@ -3654,6 +3659,38 @@ function FeatureGenerator:AdjustTerrainTypes()
 	end
 end
 ------------------------------------------------------------------------------
+function MireLakeClusterSize(plot, iW, limit)
+	-- Size of the water body this plot would join if it became a lake, counting
+	-- the plot itself. Stops at limit so open ocean does not walk the map.
+	local seen = {};
+	local q = {};
+	table.insert(q, plot);
+	seen[plot:GetY() * iW + plot:GetX()] = true;
+	local n = 0;
+	local qi = 1;
+	while qi <= #q do
+		local p = q[qi];
+		qi = qi + 1;
+		n = n + 1;
+		if n >= limit then
+			return n;
+		end
+		local d = 0;
+		while d < DirectionTypes.NUM_DIRECTION_TYPES do
+			local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+			if adj ~= nil and adj:IsWater() then
+				local k = adj:GetY() * iW + adj:GetX();
+				if seen[k] == nil then
+					seen[k] = true;
+					table.insert(q, adj);
+				end
+			end
+			d = d + 1;
+		end
+	end
+	return n;
+end
+------------------------------------------------------------------------------
 function AddLakes()
 	print("Map Generation - Adding Lakes");
 	WeeveeDbg("AddLakes");
@@ -3676,6 +3713,9 @@ function AddLakes()
 							if WaterAllowedAtX(plot:GetX()) == false then
 								allow = false;
 							end
+						end
+						if allow and mireBand[bi] == 3 and MireLakeClusterSize(plot, iW, 4) >= 4 then
+							allow = false;
 						end
 						if allow == true then
 							plot:SetArea(-1);
@@ -6633,39 +6673,42 @@ function AddMireBands()
 	if iH >= 44 then
 		nBlobs = 4;
 	end
+	nBlobs = nBlobs * 2;
 	local b = 0;
-	while b < nBlobs and #woodLand > 8 do
+	local blobTries = 0;
+	local maxBlobTries = nBlobs * 8;
+	while b < nBlobs and blobTries < maxBlobTries and #woodLand > 8 do
+		blobTries = blobTries + 1;
 		local seed = woodLand[1 + Map.Rand(#woodLand, "Mire Wood Blob Seed")];
-		local q = {};
-		table.insert(q, seed);
-		local qi = 1;
-		local grown = 0;
-		local target = 4 + Map.Rand(5, "Mire Wood Blob Size");
-		if seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+		if seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and CountMireMountainNeighbors(seed) == 0 then
+			local q = {};
+			table.insert(q, seed);
+			local qi = 1;
 			seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-			grown = 1;
-		end
-		while qi <= #q and grown < target do
-			local p = q[qi];
-			qi = qi + 1;
-			local d = 0;
-			while d < DirectionTypes.NUM_DIRECTION_TYPES do
-				local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
-				if adj ~= nil and grown < target then
-					local ax = adj:GetX();
-					local ai = adj:GetY() * iW + ax + 1;
-					if skip[ax] ~= true and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-						if Map.Rand(100, "Mire Wood Blob Grow") < 70 then
-							adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-							table.insert(q, adj);
-							grown = grown + 1;
+			local grown = 1;
+			local target = 1 + Map.Rand(3, "Mire Wood Blob Size");
+			while qi <= #q and grown < target do
+				local p = q[qi];
+				qi = qi + 1;
+				local d = 0;
+				while d < DirectionTypes.NUM_DIRECTION_TYPES do
+					local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+					if adj ~= nil and grown < target then
+						local ax = adj:GetX();
+						local ai = adj:GetY() * iW + ax + 1;
+						if skip[ax] ~= true and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+							if Map.Rand(100, "Mire Wood Blob Grow") < 70 then
+								adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+								table.insert(q, adj);
+								grown = grown + 1;
+							end
 						end
 					end
+					d = d + 1;
 				end
-				d = d + 1;
 			end
+			b = b + 1;
 		end
-		b = b + 1;
 	end
 	local snowFrac = Fractal.Create(iW, iH, 4, Map.GetFractalFlags(), -1, -1);
 	local snowCut = {};
@@ -9707,7 +9750,7 @@ function PlaceMurkWheatAndMarshStone()
 					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and plot:GetResourceType(-1) == -1 then
 					if stoneID ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_MARSH then
-						if Map.Rand(100, "Murk Marsh Stone") < 10 then
+						if Map.Rand(100, "Murk Marsh Stone") < 12 then
 							plot:SetResourceType(stoneID, 1);
 							nStone = nStone + 1;
 						end
