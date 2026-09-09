@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.5 script loaded");
+print("WvE Map (dev) script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -62,7 +62,7 @@ function WeeveeDbgCall(name, fn, a1, a2, a3, a4, a5)
 		WeeveeDbg("ERR " .. name .. " " .. tostring(err));
 	end
 end
-WeeveeDbg("script loaded 11.0.5");
+WeeveeDbg("script loaded (dev)");
 
 local OPT_CENTER_SPLIT = 1;
 local OPT_SNOW_BARRIER = 2;
@@ -70,10 +70,14 @@ local OPT_WRAP = 3;
 local OPT_FRONT_MOUNTAIN = 4;
 local OPT_CANVAS_SHRINK = 5;
 local OPT_EXPLO_BALANCE = 6;
+local OPT_LAKES = 7;
 local CANVAS_SHRINK_NO = 1;
 local CANVAS_SHRINK_YES = 2;
 local EXPLO_BALANCE_NO = 1;
 local EXPLO_BALANCE_YES = 2;
+local LAKES_LOW = 1;
+local LAKES_MEDIUM = 2;
+local LAKES_HIGH = 3;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -115,7 +119,7 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.5 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] WvE Map (dev) [ENDCOLOR]",
 		Description = "",
 		SupportsMultiplayer = true,
 		IconIndex = 18,
@@ -161,14 +165,14 @@ function GetMapScriptInfo()
 				Name = "[COLOR_HIGHLIGHT_TEXT]Front Mountain %[ENDCOLOR]",
 				Values = {
 					"[COLOR_HIGHLIGHT_TEXT]20%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]25%[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 25%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]30%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 35%[ENDCOLOR]",	
+					"[COLOR_HIGHLIGHT_TEXT]35%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]40%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]45%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]50%[ENDCOLOR]",
 				},
-				DefaultValue = 4,
+				DefaultValue = 2,
 				SortPriority = -96,
 			},
 			{
@@ -188,6 +192,16 @@ function GetMapScriptInfo()
 				},
 				DefaultValue = 1,
 				SortPriority = -94,
+			},
+			{
+				Name = "[COLOR_HIGHLIGHT_TEXT]Lakes[ENDCOLOR]",
+				Values = {
+					"[COLOR_HIGHLIGHT_TEXT]Low[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Medium[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]High[ENDCOLOR]",
+				},
+				DefaultValue = 2,
+				SortPriority = -93,
 			},
 		},
 	}
@@ -394,6 +408,25 @@ function ResolveExploBackCoastPlan()
 	end
 	print("Explo plan: cut", exploCutPct, "% back coast, inland seas", exploInlandSeas);
 	return exploCutPct, exploInlandSeas;
+end
+------------------------------------------------------------------------------
+local lakeRandResolved = false;
+local lakeRand = 80;
+function ResolveLakeRand()
+	if lakeRandResolved then
+		return lakeRand;
+	end
+	lakeRandResolved = true;
+	local ops = Map.GetCustomOption(OPT_LAKES);
+	if ops == LAKES_LOW then
+		lakeRand = 90;
+	elseif ops == LAKES_HIGH then
+		lakeRand = 68;
+	else
+		lakeRand = 80;
+	end
+	print("Lake chance: 1 in", lakeRand, "per eligible tile");
+	return lakeRand;
 end
 ------------------------------------------------------------------------------
 function IsOldSnow()
@@ -825,6 +858,9 @@ function AssignStartingPlots:ProcessResourceList(frequency, impact_table_number,
 					if plot_list == self.tundra_flat_no_feature then
 						frequency = frequency * 0.68;
 					end
+					break
+				elseif resources_to_place[i][1] == self.iron_ID then
+					frequency = frequency * 0.8;
 					break
 				end
 				i = i + 1;
@@ -3148,6 +3184,8 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 				if cfg.kind == "desert" then
 					lakeSize = 5 + Map.Rand(8, "Snow Wrap Lake Size");
 					circular = (Map.Rand(4, "Snow Wrap Lake Shape") == 0);
+				elseif cfg.kind == "wetland" then
+					lakeSize = 2 + Map.Rand(5, "Snow Wrap Lake Size");
 				end
 				local wantIsland = circular and lakeSize >= 6 and (Map.Rand(2, "Snow Wrap Lake Island") == 0);
 				local seedX, seedY;
@@ -3621,12 +3659,44 @@ function FeatureGenerator:AdjustTerrainTypes()
 	end
 end
 ------------------------------------------------------------------------------
+function MireLakeClusterSize(plot, iW, limit)
+	-- Size of the water body this plot would join if it became a lake, counting
+	-- the plot itself. Stops at limit so open ocean does not walk the map.
+	local seen = {};
+	local q = {};
+	table.insert(q, plot);
+	seen[plot:GetY() * iW + plot:GetX()] = true;
+	local n = 0;
+	local qi = 1;
+	while qi <= #q do
+		local p = q[qi];
+		qi = qi + 1;
+		n = n + 1;
+		if n >= limit then
+			return n;
+		end
+		local d = 0;
+		while d < DirectionTypes.NUM_DIRECTION_TYPES do
+			local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+			if adj ~= nil and adj:IsWater() then
+				local k = adj:GetY() * iW + adj:GetX();
+				if seen[k] == nil then
+					seen[k] = true;
+					table.insert(q, adj);
+				end
+			end
+			d = d + 1;
+		end
+	end
+	return n;
+end
+------------------------------------------------------------------------------
 function AddLakes()
 	print("Map Generation - Adding Lakes");
 	WeeveeDbg("AddLakes");
 	local numLakesAdded = 0;
 	local iW = Map.GetGridSize();
-	local lakePlotRand = 80;
+	local lakePlotRand = ResolveLakeRand();
 	for i, plot in Plots() do
 		if not plot:IsWater() then
 			if not plot:IsCoastalLand() then
@@ -3643,6 +3713,9 @@ function AddLakes()
 							if WaterAllowedAtX(plot:GetX()) == false then
 								allow = false;
 							end
+						end
+						if allow and mireBand[bi] == 3 and MireLakeClusterSize(plot, iW, 4) >= 4 then
+							allow = false;
 						end
 						if allow == true then
 							plot:SetArea(-1);
@@ -6600,39 +6673,42 @@ function AddMireBands()
 	if iH >= 44 then
 		nBlobs = 4;
 	end
+	nBlobs = nBlobs * 2;
 	local b = 0;
-	while b < nBlobs and #woodLand > 8 do
+	local blobTries = 0;
+	local maxBlobTries = nBlobs * 8;
+	while b < nBlobs and blobTries < maxBlobTries and #woodLand > 8 do
+		blobTries = blobTries + 1;
 		local seed = woodLand[1 + Map.Rand(#woodLand, "Mire Wood Blob Seed")];
-		local q = {};
-		table.insert(q, seed);
-		local qi = 1;
-		local grown = 0;
-		local target = 4 + Map.Rand(5, "Mire Wood Blob Size");
-		if seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+		if seed:IsWater() == false and seed:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and CountMireMountainNeighbors(seed) == 0 then
+			local q = {};
+			table.insert(q, seed);
+			local qi = 1;
 			seed:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-			grown = 1;
-		end
-		while qi <= #q and grown < target do
-			local p = q[qi];
-			qi = qi + 1;
-			local d = 0;
-			while d < DirectionTypes.NUM_DIRECTION_TYPES do
-				local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
-				if adj ~= nil and grown < target then
-					local ax = adj:GetX();
-					local ai = adj:GetY() * iW + ax + 1;
-					if skip[ax] ~= true and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-						if Map.Rand(100, "Mire Wood Blob Grow") < 70 then
-							adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
-							table.insert(q, adj);
-							grown = grown + 1;
+			local grown = 1;
+			local target = 1 + Map.Rand(3, "Mire Wood Blob Size");
+			while qi <= #q and grown < target do
+				local p = q[qi];
+				qi = qi + 1;
+				local d = 0;
+				while d < DirectionTypes.NUM_DIRECTION_TYPES do
+					local adj = PlotDirNoXWrap(p:GetX(), p:GetY(), d);
+					if adj ~= nil and grown < target then
+						local ax = adj:GetX();
+						local ai = adj:GetY() * iW + ax + 1;
+						if skip[ax] ~= true and mireBand[ai] == 2 and adj:IsWater() == false and adj:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+							if Map.Rand(100, "Mire Wood Blob Grow") < 70 then
+								adj:SetPlotType(PlotTypes.PLOT_MOUNTAIN, false, false);
+								table.insert(q, adj);
+								grown = grown + 1;
+							end
 						end
 					end
+					d = d + 1;
 				end
-				d = d + 1;
 			end
+			b = b + 1;
 		end
-		b = b + 1;
 	end
 	local snowFrac = Fractal.Create(iW, iH, 4, Map.GetFractalFlags(), -1, -1);
 	local snowCut = {};
@@ -9674,7 +9750,7 @@ function PlaceMurkWheatAndMarshStone()
 					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and plot:GetResourceType(-1) == -1 then
 					if stoneID ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_MARSH then
-						if Map.Rand(100, "Murk Marsh Stone") < 6 then
+						if Map.Rand(100, "Murk Marsh Stone") < 12 then
 							plot:SetResourceType(stoneID, 1);
 							nStone = nStone + 1;
 						end

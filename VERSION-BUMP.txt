@@ -8,8 +8,8 @@ does not touch the playable files here: no git mv, no repo rename, no
 in-game title edit committed. Instead the bump builds a stamped copy
 outside the repo, in Assets/Maps, plus a zip to hand out.
 
-Current version: 11.0.5
-Next version:    11.0.6   (set this as current after a successful bump)
+Current version: 11.0.6
+Next version:    11.0.7   (set this as current after a successful bump)
 
 The ledger lines above are the only thing in this repo a bump changes.
 
