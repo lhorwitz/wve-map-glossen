@@ -16,6 +16,7 @@ print("Weevee Map 11.0.5 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
+	"C:\\Users\\lucas\\OneDrive\\Documents\\My Games\\Sid Meier's Civilization 5\\Logs\\weevee_dbg.log",
 	"C:\\Users\\bbruno\\Documents\\My Games\\Sid Meier's Civilization 5\\Logs\\weevee_dbg.log",
 	"weevee_dbg.log",
 };
@@ -1668,26 +1669,6 @@ function GetSnowWrapWaterBounds(iW)
 	local minX = wrapHalf + 4;
 	local maxX = mid - centerHalf - 5;
 	return minX, maxX;
-end
-------------------------------------------------------------------------------
-function GetDesertWaterStrip(iW)
-	local minX, maxX = GetSnowWrapWaterBounds(iW);
-	if minX > maxX then
-		return minX, maxX;
-	end
-	local playW = maxX - minX;
-	local lakeW = math.floor(playW * 0.32);
-	if lakeW < 2 then
-		lakeW = 2;
-	end
-	local lakeMaxX = minX + lakeW;
-	if lakeMaxX > maxX - 3 then
-		lakeMaxX = maxX - 3;
-	end
-	if lakeMaxX < minX then
-		lakeMaxX = maxX;
-	end
-	return minX, lakeMaxX;
 end
 ------------------------------------------------------------------------------
 function GetDesertWaterStrip(iW)
