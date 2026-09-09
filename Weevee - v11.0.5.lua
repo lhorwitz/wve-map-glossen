@@ -165,14 +165,14 @@ function GetMapScriptInfo()
 				Name = "[COLOR_HIGHLIGHT_TEXT]Front Mountain %[ENDCOLOR]",
 				Values = {
 					"[COLOR_HIGHLIGHT_TEXT]20%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]25%[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 25%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]30%[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] 35%[ENDCOLOR]",	
+					"[COLOR_HIGHLIGHT_TEXT]35%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]40%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]45%[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]50%[ENDCOLOR]",
 				},
-				DefaultValue = 4,
+				DefaultValue = 2,
 				SortPriority = -96,
 			},
 			{
