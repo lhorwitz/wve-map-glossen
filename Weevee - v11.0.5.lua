@@ -12,7 +12,7 @@ include("DEFMultilayeredFractalW");
 include("DEFFeatureGeneratorW");
 include("DEFTerrainGeneratorW");
 
-print("Weevee Map 11.0.5 script loaded");
+print("WvE Map 11.0.5 script loaded");
 
 local weeveeDbgHandle = nil;
 local WEEVEE_DBG_PATHS = {
@@ -119,7 +119,7 @@ end
 ------------------------------------------------------------------------------
 function GetMapScriptInfo()
 	return {
-		Name = "[COLOR_HIGHLIGHT_TEXT] Weevee Map 11.0.5 [ENDCOLOR]",
+		Name = "[COLOR_HIGHLIGHT_TEXT] WvE Map 11.0.5 [ENDCOLOR]",
 		Description = "",
 		SupportsMultiplayer = true,
 		IconIndex = 18,
