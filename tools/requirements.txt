@@ -1,0 +1,3 @@
+# lupa bundles several Lua runtimes; the tooling uses lupa.lua51, which is the
+# same Lua version Civ V embeds.
+lupa>=2.8

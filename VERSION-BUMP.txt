@@ -33,10 +33,9 @@ Agent steps (in order)
 2. Commit any playable map changes that belong in this bump, message
    focused on why, then push to origin. Do this BEFORE building, so the
    release is cut from what is actually pushed.
-3. Build the release from inside this repo:
+3. Build the release from the repo root:
 
-     C:\Users\lucas\weevee-tools\luaenv\Scripts\python.exe ^
-       C:\Users\lucas\weevee-tools\bump.py X.Y.Z
+     .venv\Scripts\python.exe tools\bump.py X.Y.Z
 
    It copies every .lua out to Assets/Maps/wve_map_glossen_vX.Y.Z/,
    renames the map lua, stamps the version into it, syntax-checks the
@@ -62,11 +61,14 @@ Notes
   but the build in step 3 reads the working tree, so an uncommitted edit
   WILL ship in the zip. Keep step 2 before step 3.
 
-Tooling (lives outside the repo, in C:\Users\lucas\weevee-tools)
----------------------------------------------------------------
-  luaenv\      Python venv with lupa; provides a real Lua 5.1 parser
-  luacheck.py  syntax-check .lua files    (python luacheck.py .)
-  bump.py      build a stamped release    (python bump.py X.Y.Z)
+Tooling (in tools/, see tools/README.md)
+----------------------------------------
+  .venv\             Python venv with lupa; a real Lua 5.1 parser. Not
+                     committed - create it once per clone with:
+                       python -m venv .venv
+                       .venv\Scripts\python.exe -m pip install -r tools\requirements.txt
+  tools\luacheck.py  syntax-check every .lua in the repo
+  tools\bump.py      build a stamped release
 
 Lua 5.1 is what Civ V embeds, so luacheck catches the parse errors the
 game would hit on load. It cannot catch runtime errors: Map, GameInfo,

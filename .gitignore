@@ -1,3 +1,8 @@
 Thumbs.db
 Desktop.ini
 *.bak
+
+# dev tooling
+.venv/
+__pycache__/
+weevee_dbg.log

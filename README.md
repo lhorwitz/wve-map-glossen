@@ -93,8 +93,32 @@ The main script generates the **west half only**, then mirrors it east at the
 end of `StartPlotSystem`. New terrain code should write west-only and let the
 mirror propagate it.
 
+## Developing
+
+Set up the tooling once per clone, from the repo root:
+
+```
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r tools/requirements.txt
+```
+
+Then syntax-check your changes before loading the game:
+
+```
+.venv\Scripts\python.exe tools/luacheck.py
+```
+
+That runs a real Lua 5.1 parser — the version Civ V embeds — so it catches
+the errors the game would hit on load. It can't catch runtime errors, since
+`Map`, `GameInfo` and friends only exist in-game.
+
 ## Releasing
 
-See [VERSION-BUMP.txt](VERSION-BUMP.txt). This repo is never renamed or
-version-stamped; a release is built into `Assets/Maps` as a standalone folder
-and zip.
+```
+.venv\Scripts\python.exe tools/bump.py X.Y.Z
+```
+
+This repo is never renamed or version-stamped. The build writes a standalone
+`wve_map_glossen_vX.Y.Z` folder and zip into the parent directory, stamping
+the version into the copy. See [VERSION-BUMP.txt](VERSION-BUMP.txt) for the
+full procedure and [tools/README.md](tools/README.md) for the scripts.
