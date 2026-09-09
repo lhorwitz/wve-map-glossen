@@ -70,10 +70,14 @@ local OPT_WRAP = 3;
 local OPT_FRONT_MOUNTAIN = 4;
 local OPT_CANVAS_SHRINK = 5;
 local OPT_EXPLO_BALANCE = 6;
+local OPT_LAKES = 7;
 local CANVAS_SHRINK_NO = 1;
 local CANVAS_SHRINK_YES = 2;
 local EXPLO_BALANCE_NO = 1;
 local EXPLO_BALANCE_YES = 2;
+local LAKES_LOW = 1;
+local LAKES_MEDIUM = 2;
+local LAKES_HIGH = 3;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -188,6 +192,16 @@ function GetMapScriptInfo()
 				},
 				DefaultValue = 1,
 				SortPriority = -94,
+			},
+			{
+				Name = "[COLOR_HIGHLIGHT_TEXT]Lakes[ENDCOLOR]",
+				Values = {
+					"[COLOR_HIGHLIGHT_TEXT]Low[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Medium[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]High[ENDCOLOR]",
+				},
+				DefaultValue = 2,
+				SortPriority = -93,
 			},
 		},
 	}
@@ -394,6 +408,25 @@ function ResolveExploBackCoastPlan()
 	end
 	print("Explo plan: cut", exploCutPct, "% back coast, inland seas", exploInlandSeas);
 	return exploCutPct, exploInlandSeas;
+end
+------------------------------------------------------------------------------
+local lakeRandResolved = false;
+local lakeRand = 80;
+function ResolveLakeRand()
+	if lakeRandResolved then
+		return lakeRand;
+	end
+	lakeRandResolved = true;
+	local ops = Map.GetCustomOption(OPT_LAKES);
+	if ops == LAKES_LOW then
+		lakeRand = 90;
+	elseif ops == LAKES_HIGH then
+		lakeRand = 68;
+	else
+		lakeRand = 80;
+	end
+	print("Lake chance: 1 in", lakeRand, "per eligible tile");
+	return lakeRand;
 end
 ------------------------------------------------------------------------------
 function IsOldSnow()
@@ -3626,7 +3659,7 @@ function AddLakes()
 	WeeveeDbg("AddLakes");
 	local numLakesAdded = 0;
 	local iW = Map.GetGridSize();
-	local lakePlotRand = 80;
+	local lakePlotRand = ResolveLakeRand();
 	for i, plot in Plots() do
 		if not plot:IsWater() then
 			if not plot:IsCoastalLand() then
@@ -9674,7 +9707,7 @@ function PlaceMurkWheatAndMarshStone()
 					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
 					and plot:GetResourceType(-1) == -1 then
 					if stoneID ~= nil and plot:GetFeatureType() == FeatureTypes.FEATURE_MARSH then
-						if Map.Rand(100, "Murk Marsh Stone") < 6 then
+						if Map.Rand(100, "Murk Marsh Stone") < 10 then
 							plot:SetResourceType(stoneID, 1);
 							nStone = nStone + 1;
 						end
