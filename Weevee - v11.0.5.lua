@@ -11998,6 +11998,89 @@ function ShoresPlantIslets()
 	WeeveeDbg("ShoresPlantIslets done placed=" .. tostring(placed));
 end
 ------------------------------------------------------------------------------
+-- Which third of the map's height a row falls in: 1 south, 2 middle, 3 north.
+function ShoresBandForY(y, iH)
+	if iH < 3 then
+		return 1;
+	end
+	local f = y / (iH - 1);
+	if f < 0.34 then
+		return 1;
+	elseif f < 0.67 then
+		return 2;
+	end
+	return 3;
+end
+------------------------------------------------------------------------------
+-- One row per island: size, which half it sits in, which height band its
+-- centre of mass falls in, and the best legal start tile on it.
+function ShoresBuildIslandSummary()
+	local iW, iH = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	local acc = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				local a = acc[id];
+				if a == nil then
+					a = { n = 0, sy = 0, west = (x < mid), bestX = nil, bestY = nil };
+					acc[id] = a;
+				end
+				a.n = a.n + 1;
+				a.sy = a.sy + y;
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	-- Second pass: the start tile nearest each island's centre, so a capital
+	-- lands in the body of the island rather than out on an arm.
+	for id, a in pairs(acc) do
+		a.cy = a.sy / a.n;
+		a.band = ShoresBandForY(a.cy, iH);
+	end
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 and ShoresPlotIsStartLegal(x, y) then
+				local a = acc[id];
+				local d = math.abs(y - a.cy);
+				if a.bestX == nil or d < a.bestD then
+					a.bestX = x;
+					a.bestY = y;
+					a.bestD = d;
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return acc;
+end
+------------------------------------------------------------------------------
+-- Largest unclaimed island in a given half and height band that has a legal
+-- start tile. Returns id, x, y.
+function ShoresPickIslandInBand(summary, wantWest, band, taken)
+	local bestId, bestX, bestY;
+	local bestSize = -1;
+	for id, a in pairs(summary) do
+		if a.west == wantWest and a.band == band and a.bestX ~= nil and taken[id] ~= true then
+			if a.n > bestSize then
+				bestSize = a.n;
+				bestId = id;
+				bestX = a.bestX;
+				bestY = a.bestY;
+			end
+		end
+	end
+	return bestId, bestX, bestY;
+end
+------------------------------------------------------------------------------
 -- Shores assigns starts itself.
 --
 -- GenerateRegions sets self.method = 3, so ChooseLocations routes through
@@ -12006,87 +12089,100 @@ end
 -- to force a one-tile grass island at the region corner and recalculate areas
 -- mid-generation - which is where 6-player games were dying.
 --
--- Picking an island directly is simpler than making the candidate machinery
--- agree with us: it always terminates, always lands on legal ground, and never
--- fabricates terrain.
+-- The rule: each start takes the largest island in its half within one third
+-- of the map's height, working south to north. Deterministic, always
+-- terminates, always legal ground, and it spreads capitals the length of the
+-- map instead of letting them cluster wherever the fertility maths points.
 local ASP_FindStartWithoutRegardToAreaID = AssignStartingPlots.FindStartWithoutRegardToAreaID;
 function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, mustBeCoast)
 	if IsShores() == false then
 		return ASP_FindStartWithoutRegardToAreaID(self, region_number, mustBeCoast);
 	end
 	local iW, iH = Map.GetGridSize();
-	if self.shoresTakenIslands == nil then
+	local mid = math.floor(iW / 2);
+	if self.shoresSummary == nil then
+		self.shoresSummary = ShoresBuildIslandSummary();
 		self.shoresTakenIslands = {};
+		self.shoresUsedBands = { [true] = {}, [false] = {} };
 	end
 
-	-- Where this region wants its start, so regions spread out instead of
-	-- stacking on whichever island scores best.
+	-- Which half this region belongs to.
+	local wantWest = true;
 	local rd = self.regionData[region_number];
 	local cx, cy;
 	if rd ~= nil then
 		cx = rd[1] + math.floor(rd[3] / 2);
 		cy = rd[2] + math.floor(rd[4] / 2);
+		wantWest = (cx < mid);
 	end
 
-	local bestX, bestY, bestId;
-	local bestScore = -1;
-	local y = 0;
-	while y < iH do
-		local x = 0;
-		while x < iW do
-			if ShoresPlotIsStartLegal(x, y) then
-				local id = ShoresIslandIdAt(x, y, iW);
-				if self.shoresTakenIslands[id] ~= true then
-					-- Bigger island is better; nearer the region centre is
-					-- better; keep clear of starts already placed.
-					local score = (shoresIslandSize[id] or 0) * 10;
-					if cx ~= nil then
-						score = score - Map.PlotDistance(cx, cy, x, y) * 3;
-					end
-					local si = 1;
-					while si <= table.maxn(self.startingPlots) do
-						local sp = self.startingPlots[si];
-						if sp ~= nil and sp[1] ~= nil then
-							local d = Map.PlotDistance(sp[1], sp[2], x, y);
-							if d < 8 then
-								score = score - (8 - d) * 12;
-							end
-						end
-						si = si + 1;
-					end
-					if score > bestScore then
-						bestScore = score;
-						bestX = x;
-						bestY = y;
-						bestId = id;
-					end
+	-- Take the next unused band in this half, south to north. Preferring the
+	-- band the region already sits in keeps regions and starts aligned when
+	-- the division happens to be horizontal.
+	local used = self.shoresUsedBands[wantWest];
+	local order = {};
+	if cy ~= nil then
+		table.insert(order, ShoresBandForY(cy, iH));
+	end
+	local b = 1;
+	while b <= 3 do
+		table.insert(order, b);
+		b = b + 1;
+	end
+
+	local id, x, y;
+	local oi = 1;
+	while oi <= #order and id == nil do
+		local band = order[oi];
+		if used[band] ~= true then
+			id, x, y = ShoresPickIslandInBand(self.shoresSummary, wantWest, band,
+				self.shoresTakenIslands);
+			if id ~= nil then
+				used[band] = true;
+			end
+		end
+		oi = oi + 1;
+	end
+
+	-- More civs in this half than bands, or a band with nothing in it: fall
+	-- back to the largest unclaimed island in the half, then anywhere.
+	if id == nil then
+		local bestSize = -1;
+		for iid, a in pairs(self.shoresSummary) do
+			if a.bestX ~= nil and self.shoresTakenIslands[iid] ~= true then
+				local score = a.n;
+				if a.west ~= wantWest then
+					score = score - 1000;
+				end
+				if score > bestSize then
+					bestSize = score;
+					id = iid;
+					x = a.bestX;
+					y = a.bestY;
 				end
 			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-
-	if bestX == nil then
-		-- Every island is claimed. Allow doubling up rather than letting
-		-- vanilla fabricate an island; take any legal tile furthest from the
-		-- starts already placed.
-		bestX, bestY = ShoresNearestLegalPlot(cx, cy, nil);
-		if bestX ~= nil then
-			bestId = ShoresIslandIdAt(bestX, bestY, iW);
 		end
 	end
 
-	if bestX == nil then
+	if id == nil then
+		x, y = ShoresNearestLegalPlot(cx, cy, nil);
+		if x ~= nil then
+			id = ShoresIslandIdAt(x, y, iW);
+		end
+	end
+
+	if x == nil then
 		WeeveeDbg("ShoresFindStart region " .. tostring(region_number) .. " FOUND NOTHING");
 		return ASP_FindStartWithoutRegardToAreaID(self, region_number, mustBeCoast);
 	end
 
-	self.shoresTakenIslands[bestId] = true;
-	self.startingPlots[region_number] = {bestX, bestY, 1};
-	self:PlaceImpactAndRipples(bestX, bestY);
+	self.shoresTakenIslands[id] = true;
+	self.startingPlots[region_number] = {x, y, 1};
+	self:PlaceImpactAndRipples(x, y);
 	WeeveeDbg("ShoresFindStart region " .. tostring(region_number)
-		.. " -> " .. tostring(bestX) .. "," .. tostring(bestY)
-		.. " island=" .. tostring(bestId));
+		.. " half=" .. tostring(wantWest and "W" or "E")
+		.. " -> " .. tostring(x) .. "," .. tostring(y)
+		.. " island=" .. tostring(id)
+		.. " size=" .. tostring(shoresIslandSize[id] or 0));
 	return true, false
 end
