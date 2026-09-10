@@ -11564,8 +11564,51 @@ function ShoresFixStarts(asp)
 	WeeveeDbg("ShoresFixStarts done moved=" .. tostring(moved));
 end
 ------------------------------------------------------------------------------
+-- Nearest start-legal island tile to (sx, sy), preferring the same half of the
+-- map so a civ is not thrown across the barrier. taken is an optional set of
+-- "x,y" keys already handed out.
+function ShoresNearestLegalPlot(sx, sy, taken)
+	local iW, iH = Map.GetGridSize();
+	local mid = math.floor(iW / 2);
+	local wantWest = (sx == nil) or (sx < mid);
+	local bestX, bestY;
+	local bestScore = -1;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if ShoresPlotIsStartLegal(x, y) then
+				local key = tostring(x) .. "," .. tostring(y);
+				if taken == nil or taken[key] ~= true then
+					local sameHalf = ((x < mid) == wantWest);
+					local d = 999;
+					if sx ~= nil and sy ~= nil then
+						d = Map.PlotDistance(sx, sy, x, y);
+					end
+					local score = 1000 - d;
+					if sameHalf then
+						score = score + 5000;
+					end
+					if score > bestScore then
+						bestScore = score;
+						bestX = x;
+						bestY = y;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return bestX, bestY;
+end
+------------------------------------------------------------------------------
 -- After the mirror. This is the only pass that sees the final board, since
 -- BalanceAndAssign and the mirror both run after ShoresFixStarts.
+--
+-- Deliberately does NOT use isValidPlayer: that returns false when a player
+-- has no starting plot, which is precisely the player who needs one. A live
+-- major civ with no plot has no city and no units, and loses on turn 0.
 function ShoresFixPlayerStarts()
 	local cfg = GetBarrierConfig();
 	if cfg == nil or cfg.kind ~= "shores" then
@@ -11573,37 +11616,51 @@ function ShoresFixPlayerStarts()
 	end
 	local iW, iH = Map.GetGridSize();
 	local moved = 0;
+	local taken = {};
+
+	-- Record the tiles already legally held, so we do not double-assign.
 	local i = 0;
 	while i < GameDefines.MAX_MAJOR_CIVS do
 		local player = Players[i];
-		if isValidPlayer(player) and player:IsEverAlive() then
+		if player ~= nil and player:IsAlive() then
 			local sp = player:GetStartingPlot();
+			if sp ~= nil and ShoresPlotIsStartLegal(sp:GetX(), sp:GetY()) then
+				taken[tostring(sp:GetX()) .. "," .. tostring(sp:GetY())] = true;
+			end
+		end
+		i = i + 1;
+	end
+
+	i = 0;
+	while i < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[i];
+		if player ~= nil and player:IsAlive() then
+			local sp = player:GetStartingPlot();
+			local sx, sy;
+			local needs = true;
 			if sp ~= nil then
-				local sx = sp:GetX();
-				local sy = sp:GetY();
-				local legal = ShoresPlotIsStartLegal(sx, sy);
-				if legal == false then
-					-- Mirror the test onto the west half: an east start is the
-					-- 180 rotation of a legal west tile.
-					local mx = iW - sx - 1;
-					local my = iH - sy - 1;
-					legal = ShoresPlotIsStartLegal(mx, my);
+				sx = sp:GetX();
+				sy = sp:GetY();
+				if ShoresPlotIsStartLegal(sx, sy) then
+					needs = false;
 				end
-				if legal == false then
-					-- Prefer a real Shores island; fall back to the generic
-					-- off-edge search only if none is free. FindNearestStartOffEdge
-					-- returns two coordinates, not a plot.
-					local nx, ny = ShoresNearestLegalPlot(sx, sy);
-					if nx == nil then
-						nx, ny = FindNearestStartOffEdge(sx, sy);
+			end
+			if needs then
+				local nx, ny = ShoresNearestLegalPlot(sx, sy, taken);
+				if nx == nil then
+					nx, ny = FindNearestStartOffEdge(sx or 0, sy or 0);
+				end
+				if nx ~= nil and ny ~= nil then
+					local dest = Map.GetPlot(nx, ny);
+					if dest ~= nil and dest:IsWater() == false then
+						player:SetStartingPlot(dest);
+						taken[tostring(nx) .. "," .. tostring(ny)] = true;
+						moved = moved + 1;
+						WeeveeDbg("ShoresFixPlayerStarts moved player " .. tostring(i)
+							.. " to " .. tostring(nx) .. "," .. tostring(ny));
 					end
-					if nx ~= nil and ny ~= nil then
-						local dest = Map.GetPlot(nx, ny);
-						if dest ~= nil and dest:IsWater() == false then
-							player:SetStartingPlot(dest);
-							moved = moved + 1;
-						end
-					end
+				else
+					WeeveeDbg("ShoresFixPlayerStarts FOUND NOTHING for player " .. tostring(i));
 				end
 			end
 		end
