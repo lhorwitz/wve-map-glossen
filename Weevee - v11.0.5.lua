@@ -11997,3 +11997,96 @@ function ShoresPlantIslets()
 	print("Shores islets planted:", placed, "of", nWant, "wanted");
 	WeeveeDbg("ShoresPlantIslets done placed=" .. tostring(placed));
 end
+------------------------------------------------------------------------------
+-- Shores assigns starts itself.
+--
+-- GenerateRegions sets self.method = 3, so ChooseLocations routes through
+-- FindStartWithoutRegardToAreaID, not FindStart. On a field that is mostly
+-- ocean, whole regions contain no eligible plot, and vanilla's last resort is
+-- to force a one-tile grass island at the region corner and recalculate areas
+-- mid-generation - which is where 6-player games were dying.
+--
+-- Picking an island directly is simpler than making the candidate machinery
+-- agree with us: it always terminates, always lands on legal ground, and never
+-- fabricates terrain.
+local ASP_FindStartWithoutRegardToAreaID = AssignStartingPlots.FindStartWithoutRegardToAreaID;
+function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, mustBeCoast)
+	if IsShores() == false then
+		return ASP_FindStartWithoutRegardToAreaID(self, region_number, mustBeCoast);
+	end
+	local iW, iH = Map.GetGridSize();
+	if self.shoresTakenIslands == nil then
+		self.shoresTakenIslands = {};
+	end
+
+	-- Where this region wants its start, so regions spread out instead of
+	-- stacking on whichever island scores best.
+	local rd = self.regionData[region_number];
+	local cx, cy;
+	if rd ~= nil then
+		cx = rd[1] + math.floor(rd[3] / 2);
+		cy = rd[2] + math.floor(rd[4] / 2);
+	end
+
+	local bestX, bestY, bestId;
+	local bestScore = -1;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x < iW do
+			if ShoresPlotIsStartLegal(x, y) then
+				local id = ShoresIslandIdAt(x, y, iW);
+				if self.shoresTakenIslands[id] ~= true then
+					-- Bigger island is better; nearer the region centre is
+					-- better; keep clear of starts already placed.
+					local score = (shoresIslandSize[id] or 0) * 10;
+					if cx ~= nil then
+						score = score - Map.PlotDistance(cx, cy, x, y) * 3;
+					end
+					local si = 1;
+					while si <= table.maxn(self.startingPlots) do
+						local sp = self.startingPlots[si];
+						if sp ~= nil and sp[1] ~= nil then
+							local d = Map.PlotDistance(sp[1], sp[2], x, y);
+							if d < 8 then
+								score = score - (8 - d) * 12;
+							end
+						end
+						si = si + 1;
+					end
+					if score > bestScore then
+						bestScore = score;
+						bestX = x;
+						bestY = y;
+						bestId = id;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	if bestX == nil then
+		-- Every island is claimed. Allow doubling up rather than letting
+		-- vanilla fabricate an island; take any legal tile furthest from the
+		-- starts already placed.
+		bestX, bestY = ShoresNearestLegalPlot(cx, cy, nil);
+		if bestX ~= nil then
+			bestId = ShoresIslandIdAt(bestX, bestY, iW);
+		end
+	end
+
+	if bestX == nil then
+		WeeveeDbg("ShoresFindStart region " .. tostring(region_number) .. " FOUND NOTHING");
+		return ASP_FindStartWithoutRegardToAreaID(self, region_number, mustBeCoast);
+	end
+
+	self.shoresTakenIslands[bestId] = true;
+	self.startingPlots[region_number] = {bestX, bestY, 1};
+	self:PlaceImpactAndRipples(bestX, bestY);
+	WeeveeDbg("ShoresFindStart region " .. tostring(region_number)
+		.. " -> " .. tostring(bestX) .. "," .. tostring(bestY)
+		.. " island=" .. tostring(bestId));
+	return true, false
+end
