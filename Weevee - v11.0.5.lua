@@ -135,7 +135,7 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Wasteland[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]Shores[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Large Islands[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random (sans Snow)[ENDCOLOR]"
 				},
 				DefaultValue = 9,
@@ -1099,7 +1099,7 @@ function FrostyStartMinDist(x, y, starts, skipIndex)
 	local best = 9999;
 	local i = 1;
 	while i <= #starts do
-		if i ~= skipIndex then
+		if i ~= skipIndex and starts[i] ~= nil then
 			local ox = starts[i][1];
 			local oy = starts[i][2];
 			if ox ~= nil and oy ~= nil then
@@ -10529,6 +10529,7 @@ end
 local shoresIslandId = {};
 local shoresIslandSize = {};
 local shoresPlotTypes = nil;
+local SHORES_EAST_ID = 5000;
 local shoresIslandBiome = {};
 local shoresLakePlots = {};
 ------------------------------------------------------------------------------
@@ -11041,7 +11042,16 @@ function ShoresMirrorField(plotTypes, iW, iH)
 				local src = y * iW + x + 1;
 				local dst = my * iW + mx + 1;
 				plotTypes[dst] = plotTypes[src];
-				shoresIslandId[dst] = shoresIslandId[src];
+				local sid = shoresIslandId[src];
+				if sid ~= nil and sid ~= 0 then
+					-- A west island and its east mirror are two different
+					-- islands; sharing an id would let one capital claim both.
+					local eid = sid + SHORES_EAST_ID;
+					shoresIslandId[dst] = eid;
+					shoresIslandSize[eid] = shoresIslandSize[sid];
+				else
+					shoresIslandId[dst] = 0;
+				end
 			end
 			x = x + 1;
 		end
@@ -11443,37 +11453,41 @@ function ShoresFixStarts(asp)
 	local taken = {};
 	local moved = 0;
 
-	-- Claim the islands already legally occupied so we do not double up.
+	-- Claim islands already legally occupied. Flag duplicates for a move
+	-- rather than clearing them - a nil start crashes BalanceAndAssign.
+	local relocate = {};
 	local i = 1;
 	while i <= asp.iNumCivs do
 		local sp = asp.startingPlots[i];
-		if sp ~= nil and ShoresPlotIsStartLegal(sp[1], sp[2]) then
+		if sp ~= nil and sp[1] ~= nil and ShoresPlotIsStartLegal(sp[1], sp[2]) then
 			local id = ShoresIslandIdAt(sp[1], sp[2], iW);
 			if taken[id] == true then
-				-- two capitals on one island: the second one moves
-				asp.startingPlots[i] = nil;
+				relocate[i] = true;
 			else
 				taken[id] = true;
 			end
+		else
+			relocate[i] = true;
 		end
 		i = i + 1;
 	end
 
 	i = 1;
 	while i <= asp.iNumCivs do
-		local sp = asp.startingPlots[i];
-		local needsMove = true;
-		if sp ~= nil and ShoresPlotIsStartLegal(sp[1], sp[2]) then
-			needsMove = false;
-		end
-		if needsMove then
+		if relocate[i] then
 			local bx, by, bid = ShoresBestFreeIslandPlot(taken, asp.startingPlots, i);
+			if bx == nil then
+				-- Every qualifying island is claimed. Doubling up beats
+				-- leaving a start on water, so take the spot furthest from
+				-- the capitals already placed.
+				bx, by, bid = ShoresBestFreeIslandPlot({}, asp.startingPlots, i);
+			end
 			if bx ~= nil then
 				asp.startingPlots[i] = {bx, by, 1};
 				taken[bid] = true;
 				moved = moved + 1;
-			else
-				print("Shores: no free qualifying island for civ", i);
+			elseif asp.startingPlots[i] == nil then
+				print("Shores: no legal island tile at all for civ", i);
 			end
 		end
 		i = i + 1;
