@@ -361,7 +361,7 @@ function GetBarrierConfig()
 			armLenMin = 2,
 			armLenMax = 3,
 			islandHillPct = 34,
-			lakeAtollPct = 35,
+			lakeAtollPct = 18,
 			lakeMaxPerIsland = 1,
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
@@ -4783,15 +4783,6 @@ function AddRivers()
 				snowRiverSkip[snowCols[si]] = true;
 			end
 			si = si + 1;
-		end
-		if IsShores() then
-			local sx = 0;
-			local shoresHi = ShoresSeaHiX(iW);
-			while sx <= shoresHi do
-				snowRiverSkip[sx] = true;
-				snowRiverSkip[iW - sx - 1] = true;
-				sx = sx + 1;
-			end
 		end
 		si = 1;
 		while si <= #tundraCols do
@@ -10329,11 +10320,15 @@ function StartPlotSystem()
 	WeeveeDbg("ChooseLocations done");
 	PeakEnsureStartHills(start_plot_database);
 	WeeveeDbgCall("FrostyAdjustStarts", FrostyAdjustStarts, start_plot_database);
+	ShoresDumpStarts("PRE-FIX", start_plot_database);
 	WeeveeDbgCall("ShoresFixStarts", ShoresFixStarts, start_plot_database);
+	ShoresDumpStarts("POST-FIX", start_plot_database);
 	ClampAspStartsOffEdges(start_plot_database);
 	WeeveeDbg("BalanceAndAssign");
 	start_plot_database:BalanceAndAssign()
 	WeeveeDbg("BalanceAndAssign done");
+	ShoresDumpStarts("POST-BALANCE", start_plot_database);
+	ShoresDumpPlayers("POST-BALANCE");
 
 	--print("Placing Natural Wonders.");
 	--start_plot_database:PlaceNaturalWonders()
@@ -10509,7 +10504,9 @@ function StartPlotSystem()
 	
 	end
 	WeeveeDbgCall("FrostyFixSnowStarts", FrostyFixSnowStarts);
+	ShoresDumpPlayers("POST-MIRROR");
 	WeeveeDbgCall("ShoresFixPlayerStarts", ShoresFixPlayerStarts);
+	ShoresDumpPlayers("FINAL");
 	ClampPlayerStartsOffEdges();
 	WeeveeDbgCall("FrostyThawStartResources", FrostyThawStartResources);
 	WeeveeDbg("StartPlotSystem done");
@@ -11440,6 +11437,77 @@ end
 ------------------------------------------------------------------------------
 -- Runs after ChooseLocations. Moves any capital that is on the band, on water,
 -- or on an island too small onto a free qualifying island.
+function ShoresDumpStarts(tag, asp)
+	if IsShores() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	if asp ~= nil and asp.startingPlots ~= nil then
+		n = table.maxn(asp.startingPlots);
+	end
+	local civs = -1;
+	if asp ~= nil and asp.iNumCivs ~= nil then
+		civs = asp.iNumCivs;
+	end
+	WeeveeDbg(tag .. " civs=" .. tostring(civs) .. " maxn=" .. tostring(n));
+	local i = 1;
+	while i <= n do
+		local sp = asp.startingPlots[i];
+		if sp == nil then
+			WeeveeDbg(tag .. "  [" .. tostring(i) .. "] NIL");
+		else
+			local x = sp[1];
+			local y = sp[2];
+			local plot = Map.GetPlot(x, y);
+			local w = "?";
+			local id = "?";
+			if plot ~= nil then
+				if plot:IsWater() then w = "WATER" else w = "land" end
+				id = tostring(ShoresIslandIdAt(x, y, iW));
+			end
+			WeeveeDbg(tag .. "  [" .. tostring(i) .. "] " .. tostring(x) .. "," .. tostring(y)
+				.. " " .. w .. " island=" .. id
+				.. " legal=" .. tostring(ShoresPlotIsStartLegal(x, y)));
+		end
+		i = i + 1;
+	end
+end
+------------------------------------------------------------------------------
+function ShoresDumpPlayers(tag)
+	if IsShores() == false then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local alive = 0;
+	local noplot = 0;
+	local onwater = 0;
+	local i = 0;
+	while i < GameDefines.MAX_MAJOR_CIVS + GameDefines.MAX_MINOR_CIVS do
+		local player = Players[i];
+		if player ~= nil and player:IsEverAlive() then
+			alive = alive + 1;
+			local sp = player:GetStartingPlot();
+			if sp == nil then
+				noplot = noplot + 1;
+				WeeveeDbg(tag .. " player " .. tostring(i) .. " HAS NO START PLOT");
+			else
+				local w = "land";
+				if sp:IsWater() then
+					w = "WATER";
+					onwater = onwater + 1;
+				end
+				WeeveeDbg(tag .. " player " .. tostring(i) .. " at " .. tostring(sp:GetX())
+					.. "," .. tostring(sp:GetY()) .. " " .. w
+					.. " minor=" .. tostring(player:IsMinorCiv()));
+			end
+		end
+		i = i + 1;
+	end
+	WeeveeDbg(tag .. " SUMMARY alive=" .. tostring(alive) .. " noStartPlot=" .. tostring(noplot)
+		.. " onWater=" .. tostring(onwater));
+end
+------------------------------------------------------------------------------
 function ShoresFixStarts(asp)
 	local cfg = GetBarrierConfig();
 	if cfg == nil or cfg.kind ~= "shores" then
