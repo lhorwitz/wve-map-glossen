@@ -85,7 +85,8 @@ local SPLIT_DESERT = 4;
 local SPLIT_WASTELAND = 5;
 local SPLIT_PEAKS = 6;
 local SPLIT_FROSTY = 7;
-local SPLIT_RANDOM = 8;
+local SPLIT_SHORES = 8;
+local SPLIT_RANDOM = 9;
 local WRAP_NO = 1;
 local WRAP_YES = 2;
 local WRAP_RANDOM = 3;
@@ -134,9 +135,10 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Wasteland[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Shores[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random (sans Snow)[ENDCOLOR]"
 				},
-				DefaultValue = 8,
+				DefaultValue = 9,
 				SortPriority = -99,
 			},
 			{
@@ -217,7 +219,11 @@ function ResolveBarrierSplit()
 	barrierSplitResolved = true;
 	local ops = Map.GetCustomOption(OPT_CENTER_SPLIT);
 	if ops == SPLIT_RANDOM then
-		barrierSplit = SPLIT_SNOW_V2 + Map.Rand(SPLIT_FROSTY - SPLIT_SNOW_V2, "Barrier Terrain Random");
+		-- Explicit list: the roll no longer depends on these constants staying
+		-- adjacent, and Shores is deliberately excluded - it is a different
+		-- shape of map rather than a climate reskin.
+		local pool = { SPLIT_SNOW_V2, SPLIT_WETLAND, SPLIT_DESERT, SPLIT_WASTELAND, SPLIT_PEAKS, SPLIT_FROSTY };
+		barrierSplit = pool[1 + Map.Rand(#pool, "Barrier Terrain Random")];
 		print("Barrier Terrain random:", barrierSplit);
 	else
 		barrierSplit = ops;
@@ -235,6 +241,12 @@ function ResolveWrap()
 	if ResolveBarrierSplit() == SPLIT_SNOW then
 		barrierWrap = false;
 		print("Barrier wrap: ignored (legacy snow)");
+		return barrierWrap;
+	end
+	if ResolveBarrierSplit() == SPLIT_SHORES then
+		-- A wrap seam would put a second barrier where Shores needs open ocean.
+		barrierWrap = false;
+		print("Barrier wrap: ignored (shores)");
 		return barrierWrap;
 	end
 	local ops = Map.GetCustomOption(OPT_WRAP);
@@ -328,6 +340,29 @@ function GetBarrierConfig()
 			chaoticMountains = true,
 		};
 	end
+	if ops == SPLIT_SHORES then
+		return {
+			kind = "shores",
+			wrap = false,
+			mountainPct = 2,
+			hillPct = 19,
+			iceLakePermille = 0,
+			forestPct = 10,
+			oasisPctOfFlat = 0,
+			chaoticMountains = false,
+			bandWidth = 5,
+			dryMargin = 2,
+			islandSizeMin = 10,
+			islandSizeMax = 20,
+			islandStartMin = 10,
+			islandGapMax = 4,
+			peninsulaMax = 3,
+			lakeAtollPct = 35,
+			luxWaterDist = 3,
+			isletStrategicPct = 60,
+			islandResourcePct = 26,
+		};
+	end
 	return nil;
 end
 ------------------------------------------------------------------------------
@@ -375,6 +410,10 @@ end
 ------------------------------------------------------------------------------
 function IsExploBalance()
 	if Map.GetCustomOption(OPT_EXPLO_BALANCE) ~= EXPLO_BALANCE_YES then
+		return false
+	end
+	if IsShores() then
+		-- Shores sets its own coastline; the explo reshape would fight it.
 		return false
 	end
 	return IsSnowNoWrap();
@@ -431,6 +470,10 @@ end
 ------------------------------------------------------------------------------
 function IsOldSnow()
 	return ResolveBarrierSplit() == SPLIT_SNOW;
+end
+------------------------------------------------------------------------------
+function IsShores()
+	return ResolveBarrierSplit() == SPLIT_SHORES;
 end
 ------------------------------------------------------------------------------
 function IsSnowBarrier()
@@ -1536,11 +1579,14 @@ function AssignStartingPlots:EvaluateCandidatePlot(plotIndex, region_type)
 	local plot = Map.GetPlot(x, y);
 	if plot ~= nil and not plot:IsWater() then
 		local area = plot:Area();
-		if area ~= nil and area:GetNumTiles() < MIN_START_LANDMASS then
+		if area ~= nil and area:GetNumTiles() < ShoresMinStartLandmass() then
 			return -200, false;
 		end
 		local cfg = GetBarrierConfig();
 		if cfg ~= nil and cfg.kind == "frosty" and plot:GetTerrainType() == TerrainTypes.TERRAIN_SNOW then
+			return -200, false;
+		end
+		if cfg ~= nil and cfg.kind == "shores" and ShoresPlotIsStartLegal(x, y) == false then
 			return -200, false;
 		end
 	end
@@ -1555,17 +1601,22 @@ function AssignStartingPlots:FindStart(region_number)
 		local plot = Map.GetPlot(sx, sy);
 		if plot ~= nil then
 			local area = plot:Area();
-			if area ~= nil and area:GetNumTiles() < MIN_START_LANDMASS then
+			if area ~= nil and area:GetNumTiles() < ShoresMinStartLandmass() then
 				print("Start on tiny island at", sx, sy, "- relocating");
 				local iW, iH = Map.GetGridSize();
 				local bestDist = 9999;
 				local bestX, bestY;
+				local shores = IsShores();
 				for ry = 0, iH - 1 do
 					for rx = 0, iW - 1 do
 						local p = Map.GetPlot(rx, ry);
 						if p ~= nil and not p:IsWater() and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN and StartYAllowed(ry, iH) then
 							local a = p:Area();
-							if a ~= nil and a:GetNumTiles() >= MIN_START_LANDMASS then
+							local okHere = (a ~= nil and a:GetNumTiles() >= ShoresMinStartLandmass());
+							if shores then
+								okHere = ShoresPlotIsStartLegal(rx, ry);
+							end
+							if okHere then
 								local d = Map.PlotDistance(sx, sy, rx, ry);
 								if d < bestDist then
 									bestDist = d;
@@ -1651,6 +1702,12 @@ function ResolveSnowWrapWidths()
 			snowWrapCenterWidth = 2 * (Map.Rand(2, "Snow Wrap Center Width") + 1);
 		else
 			snowWrapCenterWidth = (ops - 1) * 2;
+		end
+		if IsShores() and snowWrapCenterWidth < 2 then
+			-- Width 0 would delete the barrier and the tundra line, which the
+			-- whole Shores layout is measured from.
+			snowWrapCenterWidth = 2;
+			print("Shores: barrier width clamped to 2");
 		end
 		print("Snow Barrier widths (no wrap): wrap=0 center=", snowWrapCenterWidth);
 		return snowWrapBackWidth, snowWrapCenterWidth;
@@ -1742,7 +1799,13 @@ function WaterAllowedAtX(x)
 		end
 	end
 	if centerHalf > 0 then
-		if x >= (mid - centerHalf - 4) and x <= (mid + centerHalf - 1 + 4) then
+		local pad = 4;
+		if IsShores() then
+			-- Shores keeps its own dry margin (cfg.dryMargin) next to the
+			-- tundra line; the generic pad would forbid water the band wants.
+			pad = 3;
+		end
+		if x >= (mid - centerHalf - pad) and x <= (mid + centerHalf - 1 + pad) then
 			return false
 		end
 	end
@@ -1818,6 +1881,43 @@ function GetSnowWrapLandMountainXs(iW)
 		xWest = firstLand;
 	end
 	return xWest, iW - 1 - xWest;
+end
+------------------------------------------------------------------------------
+-- Shores geometry. Everything is measured from the west tundra transition
+-- column, never from the hard-coded iW/2 - 4 the front-mountain code uses -
+-- that literal only equals xT - 1 at barrier width 4.
+function ShoresWestTundraX(iW)
+	local wrapN, centerN = ResolveSnowWrapWidths();
+	local centerHalf = centerN / 2;
+	local mid = math.floor(iW / 2);
+	return mid - centerHalf - 1;
+end
+------------------------------------------------------------------------------
+function ShoresBandLoX(iW)
+	local cfg = GetBarrierConfig();
+	local w = 5;
+	if cfg ~= nil and cfg.bandWidth ~= nil then
+		w = cfg.bandWidth;
+	end
+	local lo = ShoresWestTundraX(iW) - w;
+	if lo < 1 then
+		lo = 1;
+	end
+	return lo;
+end
+------------------------------------------------------------------------------
+function ShoresSeaHiX(iW)
+	return ShoresBandLoX(iW) - 1;
+end
+------------------------------------------------------------------------------
+function ShoresDryLoX(iW)
+	-- First column of the always-dry margin next to the tundra line.
+	local cfg = GetBarrierConfig();
+	local m = 2;
+	if cfg ~= nil and cfg.dryMargin ~= nil then
+		m = cfg.dryMargin;
+	end
+	return ShoresWestTundraX(iW) - m;
 end
 ------------------------------------------------------------------------------
 function PlaceMirroredMountain(plotTypes, iW, iH, x, y)
@@ -2366,6 +2466,37 @@ function AssignStartingPlots:GenerateGlobalResourcePlotLists()
 			end
 		end
 	end
+	if cfg ~= nil and cfg.kind == "shores" then
+		-- DEF drops lakes from the coast list, so island lakes would get
+		-- nothing at all. Feed back the ones that did not take an atoll, so a
+		-- lake ends up with either fish or an atoll.
+		local lakes = ShoresOpenLakePlotIndices();
+		local li = 1;
+		while li <= #lakes do
+			table.insert(self.coast_list, lakes[li]);
+			li = li + 1;
+		end
+		-- Marble is written straight from marble_list and never passes through
+		-- PlaceSpecificNumberOfResources, so filter it here instead.
+		if self.marble_list ~= nil then
+			local iWm, iHm = Map.GetGridSize();
+			local keep = {};
+			local mi = 1;
+			while mi <= #self.marble_list do
+				local idx = self.marble_list[mi];
+				local mx = (idx - 1) % iWm;
+				local my = (idx - mx - 1) / iWm;
+				if ShoresLuxPlotOk(Map.GetPlot(mx, my)) then
+					table.insert(keep, idx);
+				end
+				mi = mi + 1;
+			end
+			if #keep > 0 then
+				self.marble_list = keep;
+			end
+		end
+		print("Shores: lake fish sites", #lakes);
+	end
 	self.coast_list = GetShuffledCopyOfTable(self.coast_list);
 	self.front_coast_list = GetShuffledCopyOfTable(self.front_coast_list);
 	self.coast_next_to_land_list = GetShuffledCopyOfTable(self.coast_next_to_land_list);
@@ -2815,7 +2946,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[i_innerst_plot] = PlotTypes.PLOT_OCEAN;
 		end
 	end
-	if not IsSnowWrapX() then
+	if not IsSnowWrapX() and not IsShores() then
 		for x = 0, 0 do
 			for y = 1, iH - 2 do
 				local i = y * iW + x + 1;
@@ -2944,7 +3075,7 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[i_east_plot] = PlotTypes.PLOT_MOUNTAIN;
 		end
 	end
-	if IsSnowBarrier() then
+	if IsSnowBarrier() and not IsShores() then
 		local cfg = GetBarrierConfig();
 		local mountainOps = Map.GetCustomOption(OPT_FRONT_MOUNTAIN)
 		local mountainDensity = .20 + .05 * mountainOps
@@ -3284,8 +3415,11 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 			self.wholeworldPlotTypes[my * iW + mx + 1] = self.wholeworldPlotTypes[p[2] * iW + p[1] + 1];
 		end
 	end
-	if IsSnowNoWrap() then
+	if IsSnowNoWrap() and not IsShores() then
 		ShapeNoWrapBackstrip(self.wholeworldPlotTypes, iW, iH);
+	end
+	if IsShores() then
+		ShoresBuildPlotTypes(self.wholeworldPlotTypes, iW, iH);
 	end
 	FrostyApplySaltWater(self.wholeworldPlotTypes, iW, iH);
 	-- Plot Type generation completed. Return global plot array.
@@ -3499,6 +3633,17 @@ function GenerateTerrain()
 		args.fGrassLatitude = 0.38;
 		args.fDesertBottomLatitude = 1.1;
 		args.fDesertTopLatitude = 1.1;
+	elseif cfg ~= nil and cfg.kind == "shores" then
+		-- Islands get their terrain from AddShoresLayout's latitude regions;
+		-- this pass only needs to keep tundra and snow off the west field so
+		-- they stay exclusive to the barrier.
+		args.fSnowLatitude = 1.1;
+		args.fTundraLatitude = 1.1;
+		args.iDesertPercent = 0;
+		args.iPlainsPercent = 34;
+		args.fGrassLatitude = 0.44;
+		args.fDesertBottomLatitude = 1.1;
+		args.fDesertTopLatitude = 1.1;
 	end
 	local terraingen = TerrainGenerator.Create(args);
 
@@ -3509,6 +3654,7 @@ function GenerateTerrain()
 	AddMireBands();
 	AddPeaksLayout();
 	AddFrostyLayout();
+	AddShoresLayout();
 	WeeveeDbg("GenerateTerrain done");
 end
 ------------------------------------------------------------------------------
@@ -4207,6 +4353,12 @@ function AddFeatures()
 		args.iForestPercent = 28;
 		args.fMarshPercent = 0;
 		args.iOasisPercent = 0;
+	elseif cfg ~= nil and cfg.kind == "shores" then
+		args.iJunglePercent = 0;
+		args.iJungleFactor = 5;
+		args.iForestPercent = 26;
+		args.fMarshPercent = 1;
+		args.iOasisPercent = 0;
 	end
 	local featuregen = FeatureGenerator.Create(args);
 
@@ -4220,6 +4372,8 @@ function AddFeatures()
 	AddPeaksBackCoastForest();
 	AddFrostyForests();
 	AddFrostyIce();
+	AddShoresIslandFeatures();
+	AddShoresLakeFeatures();
 end
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
@@ -4620,6 +4774,15 @@ function AddRivers()
 			end
 			si = si + 1;
 		end
+		if IsShores() then
+			local sx = 0;
+			local shoresHi = ShoresSeaHiX(iW);
+			while sx <= shoresHi do
+				snowRiverSkip[sx] = true;
+				snowRiverSkip[iW - sx - 1] = true;
+				sx = sx + 1;
+			end
+		end
 		si = 1;
 		while si <= #tundraCols do
 			snowRiverSkip[tundraCols[si]] = true;
@@ -4866,6 +5029,12 @@ function AssignStartingPlots:GenerateRegions(args)
 				if snowY0 > self.inhabited_SouthY + 6 then
 					self.inhabited_Height = snowY0 - self.inhabited_SouthY;
 				end
+			end
+			if cfgR ~= nil and cfgR.kind == "shores" then
+				-- Capitals live on the islands, so the rectangle has to reach
+				-- the western edge of the field rather than stopping short.
+				self.inhabited_WestX = 1;
+				self.inhabited_Width = ShoresSeaHiX(iW);
 			end
 		end
 		-- Obtain "Start Placement Fertility" inside the rectangle.
@@ -10150,6 +10319,7 @@ function StartPlotSystem()
 	WeeveeDbg("ChooseLocations done");
 	PeakEnsureStartHills(start_plot_database);
 	WeeveeDbgCall("FrostyAdjustStarts", FrostyAdjustStarts, start_plot_database);
+	WeeveeDbgCall("ShoresFixStarts", ShoresFixStarts, start_plot_database);
 	ClampAspStartsOffEdges(start_plot_database);
 	WeeveeDbg("BalanceAndAssign");
 	start_plot_database:BalanceAndAssign()
@@ -10223,6 +10393,9 @@ function StartPlotSystem()
 	WeeveeDbgCall("FrostyPadSnowLuxuryYields", FrostyPadSnowLuxuryYields);
 	ForceWastelandCoastalLuxuries(start_plot_database);
 	FixNorthUniqueLuxuries();
+	WeeveeDbgCall("ShoresSweepFarLuxuries", ShoresSweepFarLuxuries);
+	WeeveeDbgCall("ShoresBoostIslandResources", ShoresBoostIslandResources);
+	WeeveeDbgCall("ShoresPlantIslets", ShoresPlantIslets);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -10326,9 +10499,1231 @@ function StartPlotSystem()
 	
 	end
 	WeeveeDbgCall("FrostyFixSnowStarts", FrostyFixSnowStarts);
+	WeeveeDbgCall("ShoresFixPlayerStarts", ShoresFixPlayerStarts);
 	ClampPlayerStartsOffEdges();
 	WeeveeDbgCall("FrostyThawStartResources", FrostyThawStartResources);
 	WeeveeDbg("StartPlotSystem done");
 end
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+------------------------------- SHORES CLIMATE -------------------------------
+-- A narrow mainland band nobody starts on, and an archipelago field to the
+-- west where every capital begins. The barrier and its tundra transition are
+-- untouched - they come from the generic SetDivide path.
+--
+-- shoresIslandId is the authority on what is an island. Areas get recalculated
+-- three times downstream (AddLakes, PlaceResourcesAndCityStates, the mirror),
+-- so plot:Area() goes stale; this grid does not.
+------------------------------------------------------------------------------
+local shoresIslandId = {};
+local shoresIslandSize = {};
+local shoresIslandBiome = {};
+local shoresLakePlots = {};
+------------------------------------------------------------------------------
+function ShoresIslandIdAt(x, y, iW)
+	local v = shoresIslandId[y * iW + x + 1];
+	if v == nil then
+		return 0;
+	end
+	return v;
+end
+------------------------------------------------------------------------------
+function ShoresInField(x, y, iW, iH)
+	return x >= 0 and x <= ShoresSeaHiX(iW) and y >= 1 and y < iH - 1;
+end
+------------------------------------------------------------------------------
+-- True when (x,y) can join island ownId without touching a foreign island.
+-- Accepting only tiles that pass this leaves at least one water tile between
+-- any two islands.
+function ShoresTileFreeForIsland(x, y, iW, iH, ownId)
+	if ShoresInField(x, y, iW, iH) == false then
+		return false
+	end
+	if ShoresIslandIdAt(x, y, iW) ~= 0 then
+		return false
+	end
+	local n = FrostyHexNeighbors(x, y);
+	local i = 1;
+	while i <= #n do
+		local nx = x + n[i][1];
+		local ny = y + n[i][2];
+		if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+			local other = ShoresIslandIdAt(nx, ny, iW);
+			if other ~= 0 and other ~= ownId then
+				return false
+			end
+		end
+		i = i + 1;
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function ShoresPaintBand(plotTypes, iW, iH)
+	local xT = ShoresWestTundraX(iW);
+	local xDry = ShoresDryLoX(iW);
+	local xLo = ShoresBandLoX(iW);
+
+	-- Everything from the band's west edge to the tundra line starts as land.
+	local y = 0;
+	while y < iH do
+		local x = xLo;
+		while x <= xT do
+			local idx = y * iW + x + 1;
+			if plotTypes[idx] == PlotTypes.PLOT_OCEAN then
+				plotTypes[idx] = PlotTypes.PLOT_LAND;
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	-- The dry margin must stay walkable, so no mountains there. Hills are fine.
+	y = 0;
+	while y < iH do
+		local x = xDry;
+		while x <= xT - 1 do
+			local idx = y * iW + x + 1;
+			if plotTypes[idx] == PlotTypes.PLOT_MOUNTAIN then
+				plotTypes[idx] = PlotTypes.PLOT_HILLS;
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	-- The tundra line itself: relief against the barrier.
+	y = 0;
+	while y < iH do
+		local roll = Map.Rand(100, "Shores Tundra Line");
+		local idx = y * iW + xT + 1;
+		if roll < 35 then
+			plotTypes[idx] = PlotTypes.PLOT_MOUNTAIN;
+		elseif roll < 80 then
+			plotTypes[idx] = PlotTypes.PLOT_HILLS;
+		else
+			plotTypes[idx] = PlotTypes.PLOT_LAND;
+		end
+		y = y + 1;
+	end
+end
+------------------------------------------------------------------------------
+-- Sea bites into the outer band columns only. The dry margin is off limits,
+-- which is what keeps the band walkable north to south.
+function ShoresCarveBandBites(plotTypes, iW, iH)
+	local xLo = ShoresBandLoX(iW);
+	local xHi = ShoresDryLoX(iW) - 1;
+	if xHi < xLo then
+		return
+	end
+	local span = xHi - xLo + 1;
+	local nBites = 2 + Map.Rand(math.max(1, math.floor(iH / 6)), "Shores Band Bites");
+	local b = 0;
+	while b < nBites do
+		local sx = xLo + Map.Rand(span, "Shores Bite X");
+		local sy = 1 + Map.Rand(math.max(1, iH - 2), "Shores Bite Y");
+		local target = 2 + Map.Rand(5, "Shores Bite Size");
+		local q = {};
+		table.insert(q, {sx, sy});
+		local grown = 0;
+		local qi = 1;
+		local guard = 0;
+		while qi <= #q and grown < target and guard < 60 do
+			guard = guard + 1;
+			local px = q[qi][1];
+			local py = q[qi][2];
+			qi = qi + 1;
+			local idx = py * iW + px + 1;
+			if px >= xLo and px <= xHi and py >= 1 and py < iH - 1
+				and plotTypes[idx] ~= PlotTypes.PLOT_OCEAN
+				and plotTypes[idx] ~= PlotTypes.PLOT_MOUNTAIN then
+				plotTypes[idx] = PlotTypes.PLOT_OCEAN;
+				grown = grown + 1;
+				local n = FrostyHexNeighbors(px, py);
+				local i = 1;
+				while i <= #n do
+					if Map.Rand(100, "Shores Bite Grow") < 55 then
+						table.insert(q, {px + n[i][1], py + n[i][2]});
+					end
+					i = i + 1;
+				end
+			end
+		end
+		b = b + 1;
+	end
+end
+------------------------------------------------------------------------------
+-- Grow one island: a roughly circular core, then up to cfg.peninsulaMax
+-- width-1 arms off it. Returns the list of tiles, or nil if it came out under
+-- islandSizeMin (in which case nothing has been committed).
+function ShoresGrowIsland(plotTypes, iW, iH, sx, sy, id, cfg)
+	local targetTotal = cfg.islandSizeMin
+		+ Map.Rand(cfg.islandSizeMax - cfg.islandSizeMin + 1, "Shores Island Size");
+	local nPen = Map.Rand(cfg.peninsulaMax + 1, "Shores Peninsula Count");
+	local penBudget = 0;
+	local k = 0;
+	while k < nPen do
+		penBudget = penBudget + 2 + Map.Rand(3, "Shores Peninsula Len");
+		k = k + 1;
+	end
+	local coreTarget = targetTotal - penBudget;
+	if coreTarget < 6 then
+		coreTarget = 6;
+	end
+
+	local tiles = {};
+	local function claim(x, y)
+		shoresIslandId[y * iW + x + 1] = id;
+		table.insert(tiles, {x, y});
+	end
+	local function release()
+		local i = 1;
+		while i <= #tiles do
+			shoresIslandId[tiles[i][2] * iW + tiles[i][1] + 1] = 0;
+			i = i + 1;
+		end
+	end
+
+	if ShoresTileFreeForIsland(sx, sy, iW, iH, id) == false then
+		return nil
+	end
+	claim(sx, sy);
+
+	-- Core: breadth-first so it fills evenly outward and stays near-circular.
+	local q = {};
+	table.insert(q, {sx, sy});
+	local qi = 1;
+	local guard = 0;
+	while qi <= #q and #tiles < coreTarget and guard < 600 do
+		guard = guard + 1;
+		local px = q[qi][1];
+		local py = q[qi][2];
+		qi = qi + 1;
+		local n = FrostyHexNeighbors(px, py);
+		local order = GetShuffledCopyOfTable(n);
+		local i = 1;
+		while i <= #order and #tiles < coreTarget do
+			local nx = px + order[i][1];
+			local ny = py + order[i][2];
+			if ShoresTileFreeForIsland(nx, ny, iW, iH, id) then
+				claim(nx, ny);
+				table.insert(q, {nx, ny});
+			end
+			i = i + 1;
+		end
+	end
+
+	if #tiles < cfg.islandSizeMin then
+		release();
+		return nil
+	end
+
+	-- Peninsulas: walk outward from a perimeter tile, width 1, wandering.
+	local pen = 0;
+	while pen < nPen and #tiles < targetTotal do
+		local from = tiles[1 + Map.Rand(#tiles, "Shores Peninsula Root")];
+		local dir = Map.Rand(6, "Shores Peninsula Dir");
+		local cx = from[1];
+		local cy = from[2];
+		local len = 2 + Map.Rand(3, "Shores Peninsula Walk");
+		local step = 0;
+		while step < len and #tiles < targetTotal do
+			if Map.Rand(3, "Shores Peninsula Turn") == 0 then
+				dir = (dir + 1 + Map.Rand(2, "Shores Peninsula Turn Dir") * 4) % 6;
+			end
+			local n = FrostyHexNeighbors(cx, cy);
+			local nx = cx + n[dir + 1][1];
+			local ny = cy + n[dir + 1][2];
+			if ShoresTileFreeForIsland(nx, ny, iW, iH, id) == false then
+				break
+			end
+			claim(nx, ny);
+			cx = nx;
+			cy = ny;
+			step = step + 1;
+		end
+		pen = pen + 1;
+	end
+
+	-- Commit to the plot array.
+	local i = 1;
+	while i <= #tiles do
+		plotTypes[tiles[i][2] * iW + tiles[i][1] + 1] = PlotTypes.PLOT_LAND;
+		i = i + 1;
+	end
+	return tiles;
+end
+------------------------------------------------------------------------------
+-- Carve a lake wherever an island has a full 7-tile hex of its own land.
+function ShoresCarveIslandLakes(plotTypes, iW, iH)
+	shoresLakePlots = {};
+	local y = 1;
+	while y < iH - 1 do
+		local x = 0;
+		while x <= ShoresSeaHiX(iW) do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				local n = FrostyHexNeighbors(x, y);
+				local full = true;
+				local i = 1;
+				while i <= #n do
+					if ShoresIslandIdAt(x + n[i][1], y + n[i][2], iW) ~= id then
+						full = false;
+						break
+					end
+					i = i + 1;
+				end
+				if full then
+					plotTypes[y * iW + x + 1] = PlotTypes.PLOT_OCEAN;
+					shoresIslandId[y * iW + x + 1] = 0;
+					if shoresIslandSize[id] ~= nil then
+						shoresIslandSize[id] = shoresIslandSize[id] - 1;
+					end
+					table.insert(shoresLakePlots, {x, y});
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return #shoresLakePlots;
+end
+------------------------------------------------------------------------------
+-- How many islands must be big enough to host a capital.
+function ShoresRequiredIslands()
+	local nCivs = 2;
+	local ok, a, b, c, d, e, f = pcall(GetPlayerAndTeamInfo);
+	if ok and a ~= nil then
+		nCivs = a;
+	end
+	local perSide = math.ceil(nCivs / 2);
+	if perSide < 1 then
+		perSide = 1;
+	end
+	return perSide, perSide + 2;
+end
+------------------------------------------------------------------------------
+function ShoresCountQualifying(iW, iH, minSize)
+	local seen = {};
+	local n = 0;
+	local y = 1;
+	while y < iH - 1 do
+		local x = 0;
+		while x <= ShoresSeaHiX(iW) do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 and seen[id] == nil and StartYAllowed(y, iH) then
+				if (shoresIslandSize[id] or 0) >= minSize then
+					seen[id] = true;
+					n = n + 1;
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return n;
+end
+------------------------------------------------------------------------------
+function ShoresBuildPlotTypes(plotTypes, iW, iH)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	WeeveeDbg("ShoresBuildPlotTypes");
+	shoresIslandId = {};
+	shoresIslandSize = {};
+	shoresIslandBiome = {};
+
+	local seaHi = ShoresSeaHiX(iW);
+
+	-- 1. Clear the western field to open ocean.
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			plotTypes[y * iW + x + 1] = PlotTypes.PLOT_OCEAN;
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	-- 2. The mainland band.
+	ShoresPaintBand(plotTypes, iW, iH);
+	ShoresCarveBandBites(plotTypes, iW, iH);
+
+	-- 3. Islands. Seed the first anywhere, then work outward from a frontier
+	--    2-5 tiles off existing land so gaps stay inside cfg.islandGapMax.
+	local perSide, wantIslands = ShoresRequiredIslands();
+	local fieldTiles = (seaHi + 1) * (iH - 2);
+	local byArea = math.floor(fieldTiles * 0.30 / 15);
+	if byArea > wantIslands then
+		wantIslands = byArea;
+	end
+	local nextId = 1;
+	local placed = 0;
+	local tries = 0;
+	local maxTries = wantIslands * 12 + 40;
+	local committed = {};
+
+	while placed < wantIslands and tries < maxTries do
+		tries = tries + 1;
+		local sx, sy;
+		if #committed == 0 then
+			sx = 1 + Map.Rand(math.max(1, seaHi - 1), "Shores Seed X");
+			sy = 3 + Map.Rand(math.max(1, iH - 6), "Shores Seed Y");
+		else
+			local anchor = committed[1 + Map.Rand(#committed, "Shores Frontier")];
+			local d = 2 + Map.Rand(cfg.islandGapMax, "Shores Frontier Dist");
+			local ang = Map.Rand(6, "Shores Frontier Dir");
+			local cx = anchor[1];
+			local cy = anchor[2];
+			local step = 0;
+			while step < d do
+				local n = FrostyHexNeighbors(cx, cy);
+				cx = cx + n[ang + 1][1];
+				cy = cy + n[ang + 1][2];
+				step = step + 1;
+			end
+			sx = cx;
+			sy = cy;
+		end
+		if ShoresInField(sx, sy, iW, iH) and StartYAllowed(sy, iH) then
+			local tiles = ShoresGrowIsland(plotTypes, iW, iH, sx, sy, nextId, cfg);
+			if tiles ~= nil then
+				shoresIslandSize[nextId] = #tiles;
+				table.insert(committed, {sx, sy});
+				nextId = nextId + 1;
+				placed = placed + 1;
+			end
+		end
+	end
+
+	-- 4. Lakes, before the qualifying count - a carve can drop a 10 to a 9.
+	local nLakes = ShoresCarveIslandLakes(plotTypes, iW, iH);
+
+	-- 5. Make sure enough islands can host a capital. Bounded repair only.
+	local qualify = ShoresCountQualifying(iW, iH, cfg.islandStartMin);
+	local repair = 0;
+	while qualify < perSide and repair < 6 do
+		repair = repair + 1;
+		local grew = false;
+		local id = 1;
+		while id < nextId do
+			local sz = shoresIslandSize[id] or 0;
+			if sz > 0 and sz < cfg.islandStartMin then
+				local yy = 1;
+				while yy < iH - 1 and (shoresIslandSize[id] or 0) < cfg.islandStartMin do
+					local xx = 0;
+					while xx <= seaHi and (shoresIslandSize[id] or 0) < cfg.islandStartMin do
+						if ShoresIslandIdAt(xx, yy, iW) == id then
+							local n = FrostyHexNeighbors(xx, yy);
+							local i = 1;
+							while i <= #n do
+								local nx = xx + n[i][1];
+								local ny = yy + n[i][2];
+								if ShoresTileFreeForIsland(nx, ny, iW, iH, id) then
+									shoresIslandId[ny * iW + nx + 1] = id;
+									plotTypes[ny * iW + nx + 1] = PlotTypes.PLOT_LAND;
+									shoresIslandSize[id] = (shoresIslandSize[id] or 0) + 1;
+									grew = true;
+								end
+								i = i + 1;
+							end
+						end
+						xx = xx + 1;
+					end
+					yy = yy + 1;
+				end
+			end
+			id = id + 1;
+		end
+		qualify = ShoresCountQualifying(iW, iH, cfg.islandStartMin);
+		if grew == false then
+			break
+		end
+	end
+	if qualify < perSide then
+		print("Shores WARNING: only", qualify, "islands can host a capital, need", perSide);
+	end
+
+	-- 6. Mirror the whole field so island sizes are symmetric before regions
+	--    are measured. FrostyCopyOceanWestToEast only moves ocean; we need
+	--    full plot types plus the island grid.
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= math.floor(iW / 2) do
+			local mx = iW - x - 1;
+			local my = iH - y - 1;
+			if mx >= 0 and mx < iW and my >= 0 and my < iH then
+				local src = y * iW + x + 1;
+				local dst = my * iW + mx + 1;
+				plotTypes[dst] = plotTypes[src];
+				shoresIslandId[dst] = shoresIslandId[src];
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	print("Shores: islands", placed, " lakes", nLakes, " capital-capable", qualify, "/", perSide);
+	WeeveeDbg("ShoresBuildPlotTypes done islands=" .. tostring(placed));
+end
+------------------------------------------------------------------------------
+-- Islands take their biome from where they sit north to south, so each island
+-- reads as one place rather than a latitude smear across four tiles.
+-- 1 tropical, 2 temperate, 3 plains, 4 arid, 5 tundra.
+function ShoresBiomeForY(y, iH, jitter)
+	local yNorm = 0;
+	if iH > 1 then
+		yNorm = y / (iH - 1);
+	end
+	yNorm = yNorm + jitter;
+	if yNorm < 0.22 then
+		return 1;
+	elseif yNorm < 0.42 then
+		return 2;
+	elseif yNorm < 0.60 then
+		return 3;
+	elseif yNorm < 0.78 then
+		return 4;
+	end
+	return 5;
+end
+------------------------------------------------------------------------------
+function ShoresBiomeTerrain(biome)
+	if biome == 1 then
+		if Map.Rand(100, "Shores Tropical Terrain") < 70 then
+			return TerrainTypes.TERRAIN_GRASS;
+		end
+		return TerrainTypes.TERRAIN_PLAINS;
+	elseif biome == 2 then
+		if Map.Rand(100, "Shores Temperate Terrain") < 72 then
+			return TerrainTypes.TERRAIN_GRASS;
+		end
+		return TerrainTypes.TERRAIN_PLAINS;
+	elseif biome == 3 then
+		if Map.Rand(100, "Shores Plains Terrain") < 74 then
+			return TerrainTypes.TERRAIN_PLAINS;
+		end
+		return TerrainTypes.TERRAIN_GRASS;
+	elseif biome == 4 then
+		if Map.Rand(100, "Shores Arid Terrain") < 45 then
+			return TerrainTypes.TERRAIN_DESERT;
+		end
+		return TerrainTypes.TERRAIN_PLAINS;
+	end
+	if Map.Rand(100, "Shores Tundra Terrain") < 80 then
+		return TerrainTypes.TERRAIN_TUNDRA;
+	end
+	return TerrainTypes.TERRAIN_PLAINS;
+end
+------------------------------------------------------------------------------
+function AddShoresLayout()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	WeeveeDbg("AddShoresLayout");
+	local iW, iH = Map.GetGridSize();
+	local seaHi = ShoresSeaHiX(iW);
+	local xLo = ShoresBandLoX(iW);
+	local xDry = ShoresDryLoX(iW);
+	local xT = ShoresWestTundraX(iW);
+
+	-- Pick one biome per island, from the island's own centre of mass.
+	local sumY = {};
+	local cnt = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				sumY[id] = (sumY[id] or 0) + y;
+				cnt[id] = (cnt[id] or 0) + 1;
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	shoresIslandBiome = {};
+	for id, n in pairs(cnt) do
+		local midY = sumY[id] / n;
+		local jitter = (Map.Rand(3, "Shores Biome Jitter") - 1) * 0.06;
+		shoresIslandBiome[id] = ShoresBiomeForY(midY, iH, jitter);
+	end
+
+	-- Paint island terrain.
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false then
+					plot:SetTerrainType(ShoresBiomeTerrain(shoresIslandBiome[id] or 3), false, false);
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	-- Band terrain: temperate, never desert, never tundra.
+	y = 0;
+	while y < iH do
+		local x = xLo;
+		while x <= xT - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:IsWater() == false then
+				local t = plot:GetTerrainType();
+				if t == TerrainTypes.TERRAIN_DESERT or t == TerrainTypes.TERRAIN_TUNDRA
+					or t == TerrainTypes.TERRAIN_SNOW then
+					if Map.Rand(100, "Shores Band Terrain") < 62 then
+						plot:SetTerrainType(TerrainTypes.TERRAIN_GRASS, false, false);
+					else
+						plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	-- Re-assert walkability: no mountains in the dry margin.
+	y = 0;
+	while y < iH do
+		local x = xDry;
+		while x <= xT - 1 do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+				plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	WeeveeDbg("AddShoresLayout done");
+end
+------------------------------------------------------------------------------
+function ShoresBiomeFeature(biome)
+	if biome == 1 then
+		local r = Map.Rand(100, "Shores Tropical Feature");
+		if r < 46 then
+			return FeatureTypes.FEATURE_JUNGLE;
+		elseif r < 56 then
+			return FeatureTypes.FEATURE_MARSH;
+		end
+		return FeatureTypes.NO_FEATURE;
+	elseif biome == 2 then
+		if Map.Rand(100, "Shores Temperate Feature") < 38 then
+			return FeatureTypes.FEATURE_FOREST;
+		end
+		return FeatureTypes.NO_FEATURE;
+	elseif biome == 3 then
+		if Map.Rand(100, "Shores Plains Feature") < 22 then
+			return FeatureTypes.FEATURE_FOREST;
+		end
+		return FeatureTypes.NO_FEATURE;
+	elseif biome == 4 then
+		if Map.Rand(100, "Shores Arid Feature") < 8 then
+			return FeatureTypes.FEATURE_FOREST;
+		end
+		return FeatureTypes.NO_FEATURE;
+	end
+	if Map.Rand(100, "Shores Tundra Feature") < 30 then
+		return FeatureTypes.FEATURE_FOREST;
+	end
+	return FeatureTypes.NO_FEATURE;
+end
+------------------------------------------------------------------------------
+function AddShoresIslandFeatures()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local seaHi = ShoresSeaHiX(iW);
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false
+					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+					and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+					local feat = ShoresBiomeFeature(shoresIslandBiome[id] or 3);
+					if feat ~= FeatureTypes.NO_FEATURE and plot:CanHaveFeature(feat) then
+						plot:SetFeatureType(feat, -1);
+						n = n + 1;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Shores island features:", n);
+end
+------------------------------------------------------------------------------
+local shoresAtollID = nil;
+local shoresAtollLooked = false;
+function GetShoresAtollFeatureID()
+	if shoresAtollLooked then
+		return shoresAtollID;
+	end
+	shoresAtollLooked = true;
+	for row in GameInfo.Features() do
+		if row.Type == "FEATURE_ATOLL" then
+			shoresAtollID = row.ID;
+			break
+		end
+	end
+	return shoresAtollID;
+end
+------------------------------------------------------------------------------
+-- Island lakes get an atoll or nothing. The ones left alone stay eligible for
+-- fish, which GenerateGlobalResourcePlotLists injects for us.
+function AddShoresLakeFeatures()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local atollID = GetShoresAtollFeatureID();
+	if atollID == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local n = 0;
+	local i = 1;
+	while i <= #shoresLakePlots do
+		local x = shoresLakePlots[i][1];
+		local y = shoresLakePlots[i][2];
+		local plot = Map.GetPlot(x, y);
+		if plot ~= nil and plot:IsWater() and plot:IsLake() then
+			if Map.Rand(100, "Shores Lake Atoll") < cfg.lakeAtollPct then
+				if plot:CanHaveFeature(atollID) then
+					plot:SetFeatureType(atollID, -1);
+					n = n + 1;
+				end
+			end
+		end
+		i = i + 1;
+	end
+	print("Shores lake atolls:", n, "of", #shoresLakePlots);
+end
+------------------------------------------------------------------------------
+-- Lake plots that did not take an atoll, so they can host fish.
+function ShoresOpenLakePlotIndices()
+	local out = {};
+	local iW, iH = Map.GetGridSize();
+	local i = 1;
+	while i <= #shoresLakePlots do
+		local x = shoresLakePlots[i][1];
+		local y = shoresLakePlots[i][2];
+		local plot = Map.GetPlot(x, y);
+		if plot ~= nil and plot:IsWater() and plot:IsLake()
+			and plot:GetFeatureType() == FeatureTypes.NO_FEATURE
+			and plot:GetResourceType(-1) == -1 then
+			table.insert(out, y * iW + x + 1);
+		end
+		i = i + 1;
+	end
+	return out;
+end
+------------------------------------------------------------------------------
+function ShoresMinStartLandmass()
+	local cfg = GetBarrierConfig();
+	if cfg ~= nil and cfg.kind == "shores" then
+		return cfg.islandStartMin;
+	end
+	return MIN_START_LANDMASS;
+end
+------------------------------------------------------------------------------
+-- The mainland test is simply "has no island id" - band and barrier tiles are
+-- never assigned one. That is O(1) and survives area recalculation, which a
+-- column test or plot:Area() would not.
+function ShoresPlotIsStartLegal(x, y)
+	local iW, iH = Map.GetGridSize();
+	if x == nil or y == nil then
+		return false
+	end
+	if StartYAllowed(y, iH) == false then
+		return false
+	end
+	local plot = Map.GetPlot(x, y);
+	if plot == nil or plot:IsWater() then
+		return false
+	end
+	if plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+		return false
+	end
+	local id = ShoresIslandIdAt(x, y, iW);
+	if id == 0 then
+		return false
+	end
+	if (shoresIslandSize[id] or 0) < ShoresMinStartLandmass() then
+		return false
+	end
+	return true
+end
+------------------------------------------------------------------------------
+function ShoresIslandIsTaken(id, taken)
+	return taken[id] == true;
+end
+------------------------------------------------------------------------------
+-- Best free tile on an unclaimed qualifying island, preferring distance from
+-- the starts already placed.
+function ShoresBestFreeIslandPlot(taken, starts, skipIndex)
+	local iW, iH = Map.GetGridSize();
+	local bestX, bestY, bestId;
+	local bestScore = -1;
+	local y = 1;
+	while y < iH - 1 do
+		local x = 0;
+		while x <= ShoresSeaHiX(iW) do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 and ShoresIslandIsTaken(id, taken) == false and ShoresPlotIsStartLegal(x, y) then
+				local d = FrostyStartMinDist(x, y, starts, skipIndex);
+				local score = d * 100 + (shoresIslandSize[id] or 0);
+				if score > bestScore then
+					bestScore = score;
+					bestX = x;
+					bestY = y;
+					bestId = id;
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	return bestX, bestY, bestId;
+end
+------------------------------------------------------------------------------
+-- Runs after ChooseLocations. Moves any capital that is on the band, on water,
+-- or on an island too small onto a free qualifying island.
+function ShoresFixStarts(asp)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	if asp == nil or asp.startingPlots == nil then
+		return
+	end
+	WeeveeDbg("ShoresFixStarts");
+	local iW, iH = Map.GetGridSize();
+	local taken = {};
+	local moved = 0;
+
+	-- Claim the islands already legally occupied so we do not double up.
+	local i = 1;
+	while i <= asp.iNumCivs do
+		local sp = asp.startingPlots[i];
+		if sp ~= nil and ShoresPlotIsStartLegal(sp[1], sp[2]) then
+			local id = ShoresIslandIdAt(sp[1], sp[2], iW);
+			if taken[id] == true then
+				-- two capitals on one island: the second one moves
+				asp.startingPlots[i] = nil;
+			else
+				taken[id] = true;
+			end
+		end
+		i = i + 1;
+	end
+
+	i = 1;
+	while i <= asp.iNumCivs do
+		local sp = asp.startingPlots[i];
+		local needsMove = true;
+		if sp ~= nil and ShoresPlotIsStartLegal(sp[1], sp[2]) then
+			needsMove = false;
+		end
+		if needsMove then
+			local bx, by, bid = ShoresBestFreeIslandPlot(taken, asp.startingPlots, i);
+			if bx ~= nil then
+				asp.startingPlots[i] = {bx, by, 1};
+				taken[bid] = true;
+				moved = moved + 1;
+			else
+				print("Shores: no free qualifying island for civ", i);
+			end
+		end
+		i = i + 1;
+	end
+	print("Shores starts relocated:", moved);
+	WeeveeDbg("ShoresFixStarts done moved=" .. tostring(moved));
+end
+------------------------------------------------------------------------------
+-- After the mirror. This is the only pass that sees the final board, since
+-- BalanceAndAssign and the mirror both run after ShoresFixStarts.
+function ShoresFixPlayerStarts()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local moved = 0;
+	local i = 0;
+	while i < GameDefines.MAX_MAJOR_CIVS do
+		local player = Players[i];
+		if isValidPlayer(player) and player:IsEverAlive() then
+			local sp = player:GetStartingPlot();
+			if sp ~= nil then
+				local sx = sp:GetX();
+				local sy = sp:GetY();
+				local legal = ShoresPlotIsStartLegal(sx, sy);
+				if legal == false then
+					-- Mirror the test onto the west half: an east start is the
+					-- 180 rotation of a legal west tile.
+					local mx = iW - sx - 1;
+					local my = iH - sy - 1;
+					legal = ShoresPlotIsStartLegal(mx, my);
+				end
+				if legal == false then
+					local best = FindNearestStartOffEdge(sx, sy);
+					if best ~= nil then
+						player:SetStartingPlot(best);
+						moved = moved + 1;
+					end
+				end
+			end
+		end
+		i = i + 1;
+	end
+	if moved > 0 then
+		print("Shores post-mirror start fixes:", moved);
+	end
+end
+------------------------------------------------------------------------------
+function ShoresLuxDist()
+	local cfg = GetBarrierConfig();
+	if cfg ~= nil and cfg.luxWaterDist ~= nil then
+		return cfg.luxWaterDist;
+	end
+	return 3;
+end
+------------------------------------------------------------------------------
+function ShoresLuxPlotOk(plot)
+	if plot == nil then
+		return false
+	end
+	return Map.FindWater(plot, ShoresLuxDist(), false);
+end
+------------------------------------------------------------------------------
+-- Every luxury has to be reachable from a coastal city, so drop candidate
+-- plots further than cfg.luxWaterDist from water. The ratio is scaled back up
+-- by the same factor, otherwise trimming the list quietly halves the number of
+-- luxuries the vanilla count formula asks for.
+local ASP_PlaceSpecificNumberOfResources = AssignStartingPlots.PlaceSpecificNumberOfResources;
+function AssignStartingPlots:PlaceSpecificNumberOfResources(resource_ID, quantity, amount, ratio,
+		impact_table_number, min_radius, max_radius, plot_list)
+	if IsShores() and plot_list ~= nil and resource_ID ~= nil then
+		if Game.GetResourceUsageType(resource_ID) == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
+			local iW, iH = Map.GetGridSize();
+			local kept = {};
+			local i = 1;
+			while i <= #plot_list do
+				local idx = plot_list[i];
+				local x = (idx - 1) % iW;
+				local y = (idx - x - 1) / iW;
+				local plot = Map.GetPlot(x, y);
+				if ShoresLuxPlotOk(plot) then
+					table.insert(kept, idx);
+				end
+				i = i + 1;
+			end
+			if #kept > 0 then
+				if ratio ~= nil and ratio > 0 then
+					local scale = #plot_list / #kept;
+					ratio = ratio * scale;
+					if ratio > 1 then
+						ratio = 1;
+					end
+				end
+				plot_list = kept;
+			end
+		end
+	end
+	return ASP_PlaceSpecificNumberOfResources(self, resource_ID, quantity, amount, ratio,
+		impact_table_number, min_radius, max_radius, plot_list);
+end
+------------------------------------------------------------------------------
+-- Backstop for the paths that never touch PlaceSpecificNumberOfResources.
+function ShoresSweepFarLuxuries()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local maxX = math.floor(iW * 0.5);
+	local cleared = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= maxX do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil then
+				local res = plot:GetResourceType(-1);
+				if res ~= -1 and Game.GetResourceUsageType(res) == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
+					if ShoresLuxPlotOk(plot) == false then
+						plot:SetResourceType(-1, 0);
+						cleared = cleared + 1;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	if cleared > 0 then
+		print("Shores: cleared", cleared, "luxuries too far from water");
+	end
+end
+------------------------------------------------------------------------------
+-- Six strategics at 10% each, then bonuses for the rest. Rolling the resource
+-- before choosing terrain matters: CanHaveResource is terrain-sensitive, so
+-- picking terrain first would reject most of the strategics.
+function ShoresBonusResourceIDs()
+	local out = {};
+	for row in GameInfo.Resources() do
+		if row.ResourceClassType == "RESOURCECLASS_BONUS" and row.Type ~= "RESOURCE_FISH" then
+			local id = GameInfoTypes[row.Type];
+			if id ~= nil then
+				table.insert(out, id);
+			end
+		end
+	end
+	return out;
+end
+------------------------------------------------------------------------------
+function ShoresRollResource(bonusPool)
+	local names = { "RESOURCE_HORSE", "RESOURCE_IRON", "RESOURCE_COAL",
+		"RESOURCE_ALUMINUM", "RESOURCE_OIL", "RESOURCE_URANIUM" };
+	local r = Map.Rand(100, "Shores Resource Roll");
+	local slot = math.floor(r / 10) + 1;
+	if r < 60 and names[slot] ~= nil then
+		local id = GameInfoTypes[names[slot]];
+		if id ~= nil then
+			return id, 2;
+		end
+	end
+	if #bonusPool > 0 then
+		return bonusPool[1 + Map.Rand(#bonusPool, "Shores Bonus Pick")], 1;
+	end
+	return nil, 0;
+end
+------------------------------------------------------------------------------
+function ShoresPlaceRolledResource(plot, bonusPool)
+	if plot == nil or plot:GetResourceType(-1) ~= -1 then
+		return false
+	end
+	local tries = 0;
+	while tries < 8 do
+		tries = tries + 1;
+		local id, amt = ShoresRollResource(bonusPool);
+		if id ~= nil and plot:CanHaveResource(id) then
+			plot:SetResourceType(id, amt);
+			return true
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
+-- Islands should out-produce the band. Runs after luxuries so it can only fill
+-- genuinely empty tiles and can never crowd a luxury out.
+function ShoresBoostIslandResources()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local seaHi = ShoresSeaHiX(iW);
+	local pool = ShoresBonusResourceIDs();
+	local n = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			if ShoresIslandIdAt(x, y, iW) ~= 0 then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false
+					and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+					and plot:GetResourceType(-1) == -1 then
+					if Map.Rand(100, "Shores Island Resource") < cfg.islandResourcePct then
+						if ShoresPlaceRolledResource(plot, pool) then
+							n = n + 1;
+						end
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Shores island resources added:", n);
+end
+------------------------------------------------------------------------------
+-- Islets: single or paired tiles dropped into open channels, each one carrying
+-- a resource. A candidate must have six water neighbours, which is exactly the
+-- "touches no landmass" rule and is cheaper than reasoning about areas.
+function ShoresPlantIslets()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	WeeveeDbg("ShoresPlantIslets");
+	local iW, iH = Map.GetGridSize();
+	local seaHi = ShoresSeaHiX(iW);
+	local pool = ShoresBonusResourceIDs();
+	local consumed = {};
+
+	local function allWaterNeighbors(x, y)
+		local n = FrostyHexNeighbors(x, y);
+		local i = 1;
+		while i <= #n do
+			local nx = x + n[i][1];
+			local ny = y + n[i][2];
+			if nx < 0 or nx >= iW or ny < 0 or ny >= iH then
+				return false
+			end
+			local p = Map.GetPlot(nx, ny);
+			if p == nil or p:IsWater() == false then
+				return false
+			end
+			if consumed[ny * iW + nx + 1] == true then
+				return false
+			end
+			i = i + 1;
+		end
+		return true
+	end
+
+	local function landWithin(x, y, d)
+		local n = 0;
+		local ry = y - d;
+		while ry <= y + d do
+			local rx = x - d;
+			while rx <= x + d do
+				if rx >= 0 and rx < iW and ry >= 0 and ry < iH then
+					if Map.PlotDistance(x, y, rx, ry) <= d then
+						local p = Map.GetPlot(rx, ry);
+						if p ~= nil and p:IsWater() == false then
+							n = n + 1;
+						end
+					end
+				end
+				rx = rx + 1;
+			end
+			ry = ry + 1;
+		end
+		return n;
+	end
+
+	local function markConsumed(x, y)
+		consumed[y * iW + x + 1] = true;
+		local n = FrostyHexNeighbors(x, y);
+		local i = 1;
+		while i <= #n do
+			local nx = x + n[i][1];
+			local ny = y + n[i][2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+				consumed[ny * iW + nx + 1] = true;
+			end
+			i = i + 1;
+		end
+	end
+
+	local function makeIslet(x, y)
+		local plot = Map.GetPlot(x, y);
+		if plot == nil then
+			return false
+		end
+		plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+		plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+		if ShoresPlaceRolledResource(plot, pool) == false then
+			-- Never leave a bare islet; revert rather than ship an empty rock.
+			plot:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
+			plot:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
+			return false
+		end
+		-- Deep ocean beside new land looks wrong; GenerateCoasts ran long ago.
+		local n = FrostyHexNeighbors(x, y);
+		local i = 1;
+		while i <= #n do
+			local nx = x + n[i][1];
+			local ny = y + n[i][2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+				local p = Map.GetPlot(nx, ny);
+				if p ~= nil and p:IsWater() and p:GetTerrainType() == TerrainTypes.TERRAIN_OCEAN then
+					p:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
+				end
+			end
+			i = i + 1;
+		end
+		markConsumed(x, y);
+		return true
+	end
+
+	local nWant = 3 + Map.Rand(4, "Shores Islet Count");
+	local placed = 0;
+	local tries = 0;
+	local maxTries = nWant * 25 + 40;
+	while placed < nWant and tries < maxTries do
+		tries = tries + 1;
+		local x = 1 + Map.Rand(math.max(1, seaHi), "Shores Islet X");
+		local y = 1 + Map.Rand(math.max(1, iH - 2), "Shores Islet Y");
+		local plot = Map.GetPlot(x, y);
+		if plot ~= nil and plot:IsWater() and consumed[y * iW + x + 1] ~= true
+			and allWaterNeighbors(x, y) and landWithin(x, y, 3) > 0 then
+			if makeIslet(x, y) then
+				placed = placed + 1;
+				-- A paired islet only if the partner is also fully surrounded.
+				if Map.Rand(100, "Shores Islet Pair") < 45 then
+					local n = FrostyHexNeighbors(x, y);
+					local order = GetShuffledCopyOfTable(n);
+					local i = 1;
+					while i <= #order do
+						local nx = x + order[i][1];
+						local ny = y + order[i][2];
+						local q = Map.GetPlot(nx, ny);
+						if q ~= nil and q:IsWater() and nx >= 1 and nx <= seaHi
+							and ny >= 1 and ny < iH - 1 then
+							local ok = true;
+							local m = FrostyHexNeighbors(nx, ny);
+							local k = 1;
+							while k <= #m do
+								local mx = nx + m[k][1];
+								local my = ny + m[k][2];
+								if not (mx == x and my == y) then
+									if mx < 0 or mx >= iW or my < 0 or my >= iH then
+										ok = false;
+										break
+									end
+									local mp = Map.GetPlot(mx, my);
+									if mp == nil or mp:IsWater() == false then
+										ok = false;
+										break
+									end
+								end
+								k = k + 1;
+							end
+							if ok and makeIslet(nx, ny) then
+								break
+							end
+						end
+						i = i + 1;
+					end
+				end
+			end
+		end
+	end
+	print("Shores islets planted:", placed, "of", nWant, "wanted");
+	WeeveeDbg("ShoresPlantIslets done placed=" .. tostring(placed));
+end
