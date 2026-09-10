@@ -352,15 +352,20 @@ function GetBarrierConfig()
 			chaoticMountains = false,
 			bandWidth = 5,
 			dryMargin = 2,
-			islandSizeMin = 10,
-			islandSizeMax = 20,
-			islandStartMin = 10,
+			islandSizeMin = 14,
+			islandSizeMax = 22,
+			islandStartMin = 14,
 			islandGapMax = 4,
-			peninsulaMax = 3,
+			coreMin = 3,
+			coreMax = 6,
+			armLenMin = 2,
+			armLenMax = 3,
+			islandHillPct = 34,
 			lakeAtollPct = 35,
+			lakeMaxPerIsland = 1,
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
-			islandResourcePct = 26,
+			islandResourcePct = 48,
 		};
 	end
 	return nil;
@@ -3015,7 +3020,15 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 		world_age = 1 + Map.Rand(3, "Random World Age - Lua");
 	end
 	local args = {world_age = world_age};
+	if IsShores() then
+		-- Build land and water first so ApplyTectonics gives the islands their
+		-- hills and mountains; it skips PLOT_OCEAN, so the sea is untouched.
+		ShoresBuildPlotTypes(self.wholeworldPlotTypes, iW, iH);
+	end
 	self:ApplyTectonics(args)
+	if IsShores() then
+		ShoresMirrorField(self.wholeworldPlotTypes, iW, iH);
+	end
 	
 	if false then -- Skirmish
 		for x = iW / 2 - 2, iW / 2 + 1 do
@@ -3417,9 +3430,6 @@ function MultilayeredFractal:GeneratePlotsByRegion()
 	end
 	if IsSnowNoWrap() and not IsShores() then
 		ShapeNoWrapBackstrip(self.wholeworldPlotTypes, iW, iH);
-	end
-	if IsShores() then
-		ShoresBuildPlotTypes(self.wholeworldPlotTypes, iW, iH);
 	end
 	FrostyApplySaltWater(self.wholeworldPlotTypes, iW, iH);
 	-- Plot Type generation completed. Return global plot array.
@@ -10518,6 +10528,7 @@ end
 ------------------------------------------------------------------------------
 local shoresIslandId = {};
 local shoresIslandSize = {};
+local shoresPlotTypes = nil;
 local shoresIslandBiome = {};
 local shoresLakePlots = {};
 ------------------------------------------------------------------------------
@@ -10533,9 +10544,11 @@ function ShoresInField(x, y, iW, iH)
 	return x >= 0 and x <= ShoresSeaHiX(iW) and y >= 1 and y < iH - 1;
 end
 ------------------------------------------------------------------------------
--- True when (x,y) can join island ownId without touching a foreign island.
--- Accepting only tiles that pass this leaves at least one water tile between
--- any two islands.
+-- True when (x,y) can join island ownId without touching a foreign island OR
+-- the mainland. Accepting only tiles that pass this leaves at least one water
+-- tile between any two islands, and between every island and the coast - the
+-- field's east edge sits directly against the band, so without the land test
+-- islands would fuse with the mainland.
 function ShoresTileFreeForIsland(x, y, iW, iH, ownId)
 	if ShoresInField(x, y, iW, iH) == false then
 		return false
@@ -10552,6 +10565,11 @@ function ShoresTileFreeForIsland(x, y, iW, iH, ownId)
 			local other = ShoresIslandIdAt(nx, ny, iW);
 			if other ~= 0 and other ~= ownId then
 				return false
+			end
+			if other == 0 and shoresPlotTypes ~= nil then
+				if shoresPlotTypes[ny * iW + nx + 1] ~= PlotTypes.PLOT_OCEAN then
+					return false
+				end
 			end
 		end
 		i = i + 1;
@@ -10653,23 +10671,16 @@ function ShoresCarveBandBites(plotTypes, iW, iH)
 	end
 end
 ------------------------------------------------------------------------------
--- Grow one island: a roughly circular core, then up to cfg.peninsulaMax
--- width-1 arms off it. Returns the list of tiles, or nil if it came out under
--- islandSizeMin (in which case nothing has been committed).
+-- Grow one island: a small compact core, then 1-wide arms that curl away from
+-- it. Arms are what give the islands their shape - a core of cfg.coreMin..
+-- cfg.coreMax tiles is deliberately small so most of the island is arm.
+-- Returns the tile list, or nil if it came out under islandSizeMin with
+-- nothing committed.
 function ShoresGrowIsland(plotTypes, iW, iH, sx, sy, id, cfg)
 	local targetTotal = cfg.islandSizeMin
 		+ Map.Rand(cfg.islandSizeMax - cfg.islandSizeMin + 1, "Shores Island Size");
-	local nPen = Map.Rand(cfg.peninsulaMax + 1, "Shores Peninsula Count");
-	local penBudget = 0;
-	local k = 0;
-	while k < nPen do
-		penBudget = penBudget + 2 + Map.Rand(3, "Shores Peninsula Len");
-		k = k + 1;
-	end
-	local coreTarget = targetTotal - penBudget;
-	if coreTarget < 6 then
-		coreTarget = 6;
-	end
+	local coreTarget = cfg.coreMin
+		+ Map.Rand(cfg.coreMax - cfg.coreMin + 1, "Shores Core Size");
 
 	local tiles = {};
 	local function claim(x, y)
@@ -10689,18 +10700,17 @@ function ShoresGrowIsland(plotTypes, iW, iH, sx, sy, id, cfg)
 	end
 	claim(sx, sy);
 
-	-- Core: breadth-first so it fills evenly outward and stays near-circular.
+	-- Compact core.
 	local q = {};
 	table.insert(q, {sx, sy});
 	local qi = 1;
 	local guard = 0;
-	while qi <= #q and #tiles < coreTarget and guard < 600 do
+	while qi <= #q and #tiles < coreTarget and guard < 200 do
 		guard = guard + 1;
 		local px = q[qi][1];
 		local py = q[qi][2];
 		qi = qi + 1;
-		local n = FrostyHexNeighbors(px, py);
-		local order = GetShuffledCopyOfTable(n);
+		local order = GetShuffledCopyOfTable(FrostyHexNeighbors(px, py));
 		local i = 1;
 		while i <= #order and #tiles < coreTarget do
 			local nx = px + order[i][1];
@@ -10713,24 +10723,24 @@ function ShoresGrowIsland(plotTypes, iW, iH, sx, sy, id, cfg)
 		end
 	end
 
-	if #tiles < cfg.islandSizeMin then
-		release();
-		return nil
-	end
-
-	-- Peninsulas: walk outward from a perimeter tile, width 1, wandering.
-	local pen = 0;
-	while pen < nPen and #tiles < targetTotal do
-		local from = tiles[1 + Map.Rand(#tiles, "Shores Peninsula Root")];
-		local dir = Map.Rand(6, "Shores Peninsula Dir");
-		local cx = from[1];
-		local cy = from[2];
-		local len = 2 + Map.Rand(3, "Shores Peninsula Walk");
+	-- Arms. Each one walks 1 tile wide and turns the same way every step or
+	-- two, which is what makes it curl instead of running straight.
+	local armTries = 0;
+	local maxArmTries = 40;
+	while #tiles < targetTotal and armTries < maxArmTries do
+		armTries = armTries + 1;
+		local root = tiles[1 + Map.Rand(#tiles, "Shores Arm Root")];
+		local dir = Map.Rand(6, "Shores Arm Dir");
+		local curl = 1;
+		if Map.Rand(2, "Shores Arm Curl") == 0 then
+			curl = 5;
+		end
+		local len = cfg.armLenMin
+			+ Map.Rand(cfg.armLenMax - cfg.armLenMin + 1, "Shores Arm Len");
+		local cx = root[1];
+		local cy = root[2];
 		local step = 0;
 		while step < len and #tiles < targetTotal do
-			if Map.Rand(3, "Shores Peninsula Turn") == 0 then
-				dir = (dir + 1 + Map.Rand(2, "Shores Peninsula Turn Dir") * 4) % 6;
-			end
 			local n = FrostyHexNeighbors(cx, cy);
 			local nx = cx + n[dir + 1][1];
 			local ny = cy + n[dir + 1][2];
@@ -10741,17 +10751,85 @@ function ShoresGrowIsland(plotTypes, iW, iH, sx, sy, id, cfg)
 			cx = nx;
 			cy = ny;
 			step = step + 1;
+			if Map.Rand(3, "Shores Arm Turn") > 0 then
+				dir = (dir + curl) % 6;
+			end
 		end
-		pen = pen + 1;
 	end
 
-	-- Commit to the plot array.
+	if #tiles < cfg.islandSizeMin then
+		release();
+		return nil
+	end
+
 	local i = 1;
 	while i <= #tiles do
 		plotTypes[tiles[i][2] * iW + tiles[i][1] + 1] = PlotTypes.PLOT_LAND;
 		i = i + 1;
 	end
 	return tiles;
+end
+------------------------------------------------------------------------------
+-- Absorb every water tile that is not doing a job. A field tile touching
+-- exactly one island gets handed to it; a tile touching two stays water,
+-- because that is the channel between them. Tiles touching the mainland band
+-- are never absorbed - islands must not fuse with the coast. Run to a fixed
+-- point, so what is left is channels and nothing else.
+function ShoresFillPockets(plotTypes, iW, iH)
+	local seaHi = ShoresSeaHiX(iW);
+	local rounds = 0;
+	local absorbed = 0;
+	local changed = true;
+	while changed and rounds < 12 do
+		rounds = rounds + 1;
+		changed = false;
+		local y = 1;
+		while y < iH - 1 do
+			local x = 0;
+			while x <= seaHi do
+				local idx = y * iW + x + 1;
+				if plotTypes[idx] == PlotTypes.PLOT_OCEAN then
+					local n = FrostyHexNeighbors(x, y);
+					local found = 0;
+					local nearBand = false;
+					local i = 1;
+					while i <= #n do
+						local nx = x + n[i][1];
+						local ny = y + n[i][2];
+						if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+							local nid = ShoresIslandIdAt(nx, ny, iW);
+							if nid ~= 0 then
+								if found == 0 then
+									found = nid;
+								elseif found ~= nid then
+									found = -1;
+								end
+							elseif plotTypes[ny * iW + nx + 1] ~= PlotTypes.PLOT_OCEAN then
+								-- band or barrier land
+								nearBand = true;
+							end
+						end
+						i = i + 1;
+					end
+					if found > 0 and nearBand == false then
+						-- Re-check against live state: two neighbouring pockets
+						-- claimed by different islands would otherwise fuse them.
+						if ShoresTileFreeForIsland(x, y, iW, iH, found) then
+							plotTypes[idx] = PlotTypes.PLOT_LAND;
+							shoresIslandId[idx] = found;
+							shoresIslandSize[found] = (shoresIslandSize[found] or 0) + 1;
+							absorbed = absorbed + 1;
+							changed = true;
+						end
+					end
+				end
+				x = x + 1;
+			end
+			y = y + 1;
+		end
+	end
+	print("Shores pocket fill: absorbed", absorbed, "water tiles in", rounds, "rounds");
+	return absorbed;
 end
 ------------------------------------------------------------------------------
 -- Carve a lake wherever an island has a full 7-tile hex of its own land.
@@ -10833,6 +10911,7 @@ function ShoresBuildPlotTypes(plotTypes, iW, iH)
 	shoresIslandId = {};
 	shoresIslandSize = {};
 	shoresIslandBiome = {};
+	shoresPlotTypes = plotTypes;
 
 	local seaHi = ShoresSeaHiX(iW);
 
@@ -10851,52 +10930,45 @@ function ShoresBuildPlotTypes(plotTypes, iW, iH)
 	ShoresPaintBand(plotTypes, iW, iH);
 	ShoresCarveBandBites(plotTypes, iW, iH);
 
-	-- 3. Islands. Seed the first anywhere, then work outward from a frontier
-	--    2-5 tiles off existing land so gaps stay inside cfg.islandGapMax.
+	-- 3. Islands. Sweep every field tile in random order and grow wherever one
+	--    fits. The separation guard already keeps a water tile between
+	--    neighbours, so sweeping to exhaustion packs the field about as tight
+	--    as the gap rule allows. Seeds are not restricted to start-legal rows:
+	--    islands run right down to y = 1, only capitals need StartYAllowed.
 	local perSide, wantIslands = ShoresRequiredIslands();
-	local fieldTiles = (seaHi + 1) * (iH - 2);
-	local byArea = math.floor(fieldTiles * 0.30 / 15);
-	if byArea > wantIslands then
-		wantIslands = byArea;
+	local seeds = {};
+	local sy2 = 1;
+	while sy2 < iH - 1 do
+		local sx2 = 0;
+		while sx2 <= seaHi do
+			table.insert(seeds, {sx2, sy2});
+			sx2 = sx2 + 1;
+		end
+		sy2 = sy2 + 1;
 	end
+	seeds = GetShuffledCopyOfTable(seeds);
+
 	local nextId = 1;
 	local placed = 0;
-	local tries = 0;
-	local maxTries = wantIslands * 12 + 40;
-	local committed = {};
-
-	while placed < wantIslands and tries < maxTries do
-		tries = tries + 1;
-		local sx, sy;
-		if #committed == 0 then
-			sx = 1 + Map.Rand(math.max(1, seaHi - 1), "Shores Seed X");
-			sy = 3 + Map.Rand(math.max(1, iH - 6), "Shores Seed Y");
-		else
-			local anchor = committed[1 + Map.Rand(#committed, "Shores Frontier")];
-			local d = 2 + Map.Rand(cfg.islandGapMax, "Shores Frontier Dist");
-			local ang = Map.Rand(6, "Shores Frontier Dir");
-			local cx = anchor[1];
-			local cy = anchor[2];
-			local step = 0;
-			while step < d do
-				local n = FrostyHexNeighbors(cx, cy);
-				cx = cx + n[ang + 1][1];
-				cy = cy + n[ang + 1][2];
-				step = step + 1;
-			end
-			sx = cx;
-			sy = cy;
-		end
-		if ShoresInField(sx, sy, iW, iH) and StartYAllowed(sy, iH) then
+	local si = 1;
+	while si <= #seeds do
+		local sx = seeds[si][1];
+		local sy = seeds[si][2];
+		si = si + 1;
+		if ShoresIslandIdAt(sx, sy, iW) == 0
+			and ShoresTileFreeForIsland(sx, sy, iW, iH, nextId) then
 			local tiles = ShoresGrowIsland(plotTypes, iW, iH, sx, sy, nextId, cfg);
 			if tiles ~= nil then
 				shoresIslandSize[nextId] = #tiles;
-				table.insert(committed, {sx, sy});
 				nextId = nextId + 1;
 				placed = placed + 1;
 			end
 		end
 	end
+
+	-- 3b. Soak up leftover water so the field reads as an archipelago rather
+	--     than islands adrift in open sea.
+	ShoresFillPockets(plotTypes, iW, iH);
 
 	-- 4. Lakes, before the qualifying count - a carve can drop a 10 to a 9.
 	local nLakes = ShoresCarveIslandLakes(plotTypes, iW, iH);
@@ -10946,10 +11018,20 @@ function ShoresBuildPlotTypes(plotTypes, iW, iH)
 		print("Shores WARNING: only", qualify, "islands can host a capital, need", perSide);
 	end
 
-	-- 6. Mirror the whole field so island sizes are symmetric before regions
-	--    are measured. FrostyCopyOceanWestToEast only moves ocean; we need
-	--    full plot types plus the island grid.
-	y = 0;
+	print("Shores: islands", placed, " lakes", nLakes, " capital-capable", qualify, "/", perSide);
+	WeeveeDbg("ShoresBuildPlotTypes done islands=" .. tostring(placed));
+end
+------------------------------------------------------------------------------
+-- Runs after ApplyTectonics, so the relief the engine gave the west half is
+-- what gets copied. Mirroring before tectonics would let the two halves grow
+-- different hills. FrostyCopyOceanWestToEast only moves ocean; we need full
+-- plot types plus the island grid.
+function ShoresMirrorField(plotTypes, iW, iH)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local y = 0;
 	while y < iH do
 		local x = 0;
 		while x <= math.floor(iW / 2) do
@@ -10965,9 +11047,7 @@ function ShoresBuildPlotTypes(plotTypes, iW, iH)
 		end
 		y = y + 1;
 	end
-
-	print("Shores: islands", placed, " lakes", nLakes, " capital-capable", qualify, "/", perSide);
-	WeeveeDbg("ShoresBuildPlotTypes done islands=" .. tostring(placed));
+	WeeveeDbg("ShoresMirrorField done");
 end
 ------------------------------------------------------------------------------
 -- Islands take their biome from where they sit north to south, so each island
@@ -11091,6 +11171,48 @@ function AddShoresLayout()
 			x = x + 1;
 		end
 		y = y + 1;
+	end
+
+	-- Tectonics is generous with mountains and an island is small. Cap each
+	-- one at a fifth of its tiles so a 14-tile island cannot come out
+	-- unworkable - or unstartable, since starts reject mountains.
+	local mtn = {};
+	local total = {};
+	y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			local id = ShoresIslandIdAt(x, y, iW);
+			if id ~= 0 then
+				total[id] = (total[id] or 0) + 1;
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+					if mtn[id] == nil then
+						mtn[id] = {};
+					end
+					table.insert(mtn[id], {x, y});
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	local flattened = 0;
+	for id, list in pairs(mtn) do
+		local cap = math.floor((total[id] or 0) * 0.20);
+		local shuffled = GetShuffledCopyOfTable(list);
+		local i = cap + 1;
+		while i <= #shuffled do
+			local plot = Map.GetPlot(shuffled[i][1], shuffled[i][2]);
+			if plot ~= nil then
+				plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+				flattened = flattened + 1;
+			end
+			i = i + 1;
+		end
+	end
+	if flattened > 0 then
+		print("Shores: capped", flattened, "island mountains to hills");
 	end
 
 	-- Re-assert walkability: no mountains in the dry margin.
@@ -11386,10 +11508,19 @@ function ShoresFixPlayerStarts()
 					legal = ShoresPlotIsStartLegal(mx, my);
 				end
 				if legal == false then
-					local best = FindNearestStartOffEdge(sx, sy);
-					if best ~= nil then
-						player:SetStartingPlot(best);
-						moved = moved + 1;
+					-- Prefer a real Shores island; fall back to the generic
+					-- off-edge search only if none is free. FindNearestStartOffEdge
+					-- returns two coordinates, not a plot.
+					local nx, ny = ShoresNearestLegalPlot(sx, sy);
+					if nx == nil then
+						nx, ny = FindNearestStartOffEdge(sx, sy);
+					end
+					if nx ~= nil and ny ~= nil then
+						local dest = Map.GetPlot(nx, ny);
+						if dest ~= nil and dest:IsWater() == false then
+							player:SetStartingPlot(dest);
+							moved = moved + 1;
+						end
 					end
 				end
 			end
