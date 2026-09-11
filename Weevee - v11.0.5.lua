@@ -376,7 +376,7 @@ function GetBarrierConfig()
 			armLenMax = 3,
 			islandHillPct = 46,
 			lakeAtollPct = 18,
-			lakeMaxPerIsland = 1,
+			lakeMaxPerIsland = 2,
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
 			islandResourcePct = 62,
