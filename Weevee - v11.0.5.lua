@@ -12583,6 +12583,30 @@ function ShoresGiveResourceOfClass(plot, className, excludeType, amount)
 	return false
 end
 ------------------------------------------------------------------------------
+-- True if turning this water tile into land would join something to ownId.
+-- Anything that is not ownId counts: another island, a planted islet, or the
+-- mainland band - all of them carry a different id (islets and the band carry
+-- none), and welding any of them to an island breaks the separation the whole
+-- field is built on.
+function ShoresFillWouldConnect(x, y, iW, iH, ownId)
+	local n = FrostyHexNeighbors(x, y);
+	local i = 1;
+	while i <= #n do
+		local nx = x + n[i][1];
+		local ny = y + n[i][2];
+		if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+			local p = Map.GetPlot(nx, ny);
+			if p ~= nil and p:IsWater() == false then
+				if ShoresIslandIdAt(nx, ny, iW) ~= ownId then
+					return true
+				end
+			end
+		end
+		i = i + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
 function ShoresCountWorkableRing(x, y, iW, iH)
 	local n = FrostyHexNeighbors(x, y);
 	local good = 0;
@@ -12637,6 +12661,7 @@ function ShoresEnsureCapitalLand()
 			-- West half only; the mirror copies this to the east start.
 			if sx <= math.floor(iW * 0.5) then
 				local capTerrain = sp:GetTerrainType();
+				local capIsland = ShoresIslandIdAt(sx, sy, iW);
 
 				-- Pass one: mountains in the ring become hills with stone.
 				if ShoresCountWorkableRing(sx, sy, iW, iH) < want then
@@ -12688,14 +12713,36 @@ function ShoresEnsureCapitalLand()
 						break
 					end
 					water = GetShuffledCopyOfTable(water);
-					local pick = nil;
+					-- Lakes first: filling one can never cost sea access, and an
+					-- interior lake tile cannot reach another landmass.
+					local ordered = {};
 					local wi = 1;
 					while wi <= #water do
-						local cand = water[wi];
+						if water[wi]:IsLake() then
+							table.insert(ordered, water[wi]);
+						end
+						wi = wi + 1;
+					end
+					wi = 1;
+					while wi <= #water do
+						if water[wi]:IsLake() == false then
+							table.insert(ordered, water[wi]);
+						end
+						wi = wi + 1;
+					end
+
+					local pick = nil;
+					wi = 1;
+					while wi <= #ordered do
+						local cand = ordered[wi];
 						local isSea = (cand:IsLake() == false);
+						-- Never weld this island to another one, to an islet, or
+						-- to the mainland.
+						local welds = ShoresFillWouldConnect(cand:GetX(), cand:GetY(),
+							iW, iH, capIsland);
 						-- Never take the last sea tile; the capital has to stay
 						-- coastal, which is the point of the start rule.
-						if (isSea == false) or seaCount > 1 then
+						if welds == false and ((isSea == false) or seaCount > 1) then
 							pick = cand;
 							break
 						end
