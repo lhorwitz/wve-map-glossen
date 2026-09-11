@@ -71,6 +71,7 @@ local OPT_FRONT_MOUNTAIN = 4;
 local OPT_CANVAS_SHRINK = 5;
 local OPT_EXPLO_BALANCE = 6;
 local OPT_LAKES = 7;
+local OPT_FISH = 8;
 local CANVAS_SHRINK_NO = 1;
 local CANVAS_SHRINK_YES = 2;
 local EXPLO_BALANCE_NO = 1;
@@ -78,6 +79,9 @@ local EXPLO_BALANCE_YES = 2;
 local LAKES_LOW = 1;
 local LAKES_MEDIUM = 2;
 local LAKES_HIGH = 3;
+local FISH_LOW = 1;
+local FISH_MEDIUM = 2;
+local FISH_HIGH = 3;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -204,6 +208,16 @@ function GetMapScriptInfo()
 				},
 				DefaultValue = 2,
 				SortPriority = -93,
+			},
+			{
+				Name = "[COLOR_HIGHLIGHT_TEXT]Fish[ENDCOLOR]",
+				Values = {
+					"[COLOR_HIGHLIGHT_TEXT]Low[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Medium[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]High[ENDCOLOR]",
+				},
+				DefaultValue = 2,
+				SortPriority = -92,
 			},
 		},
 	}
@@ -350,8 +364,8 @@ function GetBarrierConfig()
 			forestPct = 10,
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
-			bandWidth = 5,
-			dryMargin = 2,
+			bandWidth = 3,
+			dryMargin = 0,
 			islandSizeMin = 14,
 			islandSizeMax = 22,
 			islandStartMin = 14,
@@ -360,12 +374,12 @@ function GetBarrierConfig()
 			coreMax = 6,
 			armLenMin = 2,
 			armLenMax = 3,
-			islandHillPct = 34,
+			islandHillPct = 46,
 			lakeAtollPct = 18,
 			lakeMaxPerIsland = 1,
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
-			islandResourcePct = 48,
+			islandResourcePct = 62,
 		};
 	end
 	return nil;
@@ -4814,6 +4828,18 @@ function AddRivers()
 		function(plot)
 			local bi = plot:GetY() * iW + plot:GetX() + 1;
 			return mireBand[bi] == 3 and (not plot:IsCoastalLand()) and (Map.Rand(5, "Mire Fen River") == 0);
+		end,
+
+		function(plot)
+			-- Shores islands are small enough that every tile is coastal, so
+			-- the inland-only passes above never fire on them.
+			if IsShores() == false then
+				return false
+			end
+			if ShoresIslandIdAt(plot:GetX(), plot:GetY(), iW) == 0 then
+				return false
+			end
+			return Map.Rand(3, "Shores Island River") == 0;
 		end
 	}
 	local cfgRivers = GetBarrierConfig();
@@ -4837,6 +4863,14 @@ function AddRivers()
 		end
 		if peaksRivers and iPass == 1 then
 			riverSourceRange = 2;
+		end
+		if IsShores() then
+			-- The sea-distance test rejects every tile on a 20-tile island,
+			-- which is why islands came out riverless. Relaxing it lets island
+			-- rivers form; they are short by nature, and CullShortRivers is
+			-- Peaks-only so they are not culled.
+			riverSourceRange = 1;
+			seaWaterRange = 0;
 		end
 		for i, plot in Plots() do
 			local current_x = plot:GetX()
@@ -10401,6 +10435,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("ShoresSweepFarLuxuries", ShoresSweepFarLuxuries);
 	WeeveeDbgCall("ShoresBoostIslandResources", ShoresBoostIslandResources);
 	WeeveeDbgCall("ShoresPlantIslets", ShoresPlantIslets);
+	WeeveeDbgCall("EnforceFishCount", EnforceFishCount);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -10833,12 +10868,18 @@ end
 -- Carve a lake wherever an island has a full 7-tile hex of its own land.
 function ShoresCarveIslandLakes(plotTypes, iW, iH)
 	shoresLakePlots = {};
+	local cfgLake = GetBarrierConfig();
+	local lakeCap = 1;
+	if cfgLake ~= nil and cfgLake.lakeMaxPerIsland ~= nil then
+		lakeCap = cfgLake.lakeMaxPerIsland;
+	end
+	local perIsland = {};
 	local y = 1;
 	while y < iH - 1 do
 		local x = 0;
 		while x <= ShoresSeaHiX(iW) do
 			local id = ShoresIslandIdAt(x, y, iW);
-			if id ~= 0 then
+			if id ~= 0 and (perIsland[id] or 0) < lakeCap then
 				local n = FrostyHexNeighbors(x, y);
 				local full = true;
 				local i = 1;
@@ -10850,6 +10891,7 @@ function ShoresCarveIslandLakes(plotTypes, iW, iH)
 					i = i + 1;
 				end
 				if full then
+					perIsland[id] = (perIsland[id] or 0) + 1;
 					plotTypes[y * iW + x + 1] = PlotTypes.PLOT_OCEAN;
 					shoresIslandId[y * iW + x + 1] = 0;
 					if shoresIslandSize[id] ~= nil then
@@ -11222,6 +11264,9 @@ function AddShoresLayout()
 		print("Shores: capped", flattened, "island mountains to hills");
 	end
 
+	ShoresRaiseIslandHills(iW, iH);
+	ShoresRepairBandPath(iW, iH);
+
 	-- Re-assert walkability: no mountains in the dry margin.
 	y = 0;
 	while y < iH do
@@ -11236,6 +11281,112 @@ function AddShoresLayout()
 		y = y + 1;
 	end
 	WeeveeDbg("AddShoresLayout done");
+end
+------------------------------------------------------------------------------
+-- Any adjacent water, including island lakes. plot:IsCoastalLand() only counts
+-- water bodies above the lake threshold, so it would miss a lakeside tile.
+function ShoresPlotIsCoastal(x, y, iW, iH)
+	local n = FrostyHexNeighbors(x, y);
+	local i = 1;
+	while i <= #n do
+		local nx = x + n[i][1];
+		local ny = y + n[i][2];
+		if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+			local p = Map.GetPlot(nx, ny);
+			if p ~= nil and p:IsWater() then
+				return true
+			end
+		end
+		i = i + 1;
+	end
+	return false
+end
+------------------------------------------------------------------------------
+-- Extra hills on top of whatever tectonics gave the islands. Clustered toward
+-- tiles that already have relief so they read as ridges, not noise.
+function ShoresRaiseIslandHills(iW, iH)
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.islandHillPct == nil then
+		return
+	end
+	local seaHi = ShoresSeaHiX(iW);
+	local raised = 0;
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= seaHi do
+			if ShoresIslandIdAt(x, y, iW) ~= 0 then
+				local plot = Map.GetPlot(x, y);
+				if plot ~= nil and plot:IsWater() == false
+					and plot:GetPlotType() == PlotTypes.PLOT_LAND then
+					local chance = cfg.islandHillPct;
+					local n = FrostyHexNeighbors(x, y);
+					local i = 1;
+					while i <= #n do
+						local nx = x + n[i][1];
+						local ny = y + n[i][2];
+						if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+							local q = Map.GetPlot(nx, ny);
+							if q ~= nil and (q:GetPlotType() == PlotTypes.PLOT_HILLS
+								or q:GetPlotType() == PlotTypes.PLOT_MOUNTAIN) then
+								chance = chance + 6;
+							end
+						end
+						i = i + 1;
+					end
+					if Map.Rand(100, "Shores Island Hill") < chance then
+						plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+						raised = raised + 1;
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+	print("Shores island hills raised:", raised);
+end
+------------------------------------------------------------------------------
+-- With no dry margin the band can be bitten through, so make sure a walker can
+-- still get from the south edge to the north edge over non-mountain land.
+-- Bounded: at most one repair sweep per row.
+function ShoresRepairBandPath(iW, iH)
+	local xLo = ShoresBandLoX(iW);
+	local xT = ShoresWestTundraX(iW);
+	local function passable(x, y)
+		local plot = Map.GetPlot(x, y);
+		return plot ~= nil and plot:IsWater() == false
+			and plot:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN;
+	end
+	local fixed = 0;
+	local y = 0;
+	while y < iH do
+		local ok = false;
+		local x = xLo;
+		while x <= xT do
+			if passable(x, y) then
+				ok = true;
+				break
+			end
+			x = x + 1;
+		end
+		if ok == false then
+			-- Re-land the column nearest the tundra line on this row.
+			local plot = Map.GetPlot(xT - 1, y);
+			if plot == nil then
+				plot = Map.GetPlot(xT, y);
+			end
+			if plot ~= nil then
+				plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+				plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
+				fixed = fixed + 1;
+			end
+		end
+		y = y + 1;
+	end
+	if fixed > 0 then
+		print("Shores band path repaired on", fixed, "rows");
+	end
 end
 ------------------------------------------------------------------------------
 function ShoresBiomeFeature(biome)
@@ -11733,12 +11884,38 @@ function ShoresSweepFarLuxuries()
 	local iW, iH = Map.GetGridSize();
 	local maxX = math.floor(iW * 0.5);
 	local cleared = 0;
+
+	-- Capital work radii are off limits. The start-normalisation code
+	-- guarantees each capital a set of luxuries and strategics; clearing one
+	-- of those would silently break that guarantee.
+	-- GetMajorStartPlots returns plot objects, not coordinate pairs.
+	local startPlots = GetMajorStartPlots();
+	local starts = {};
+	local si = 1;
+	while si <= #startPlots do
+		local sp = startPlots[si];
+		if sp ~= nil then
+			table.insert(starts, {sp:GetX(), sp:GetY()});
+		end
+		si = si + 1;
+	end
+	local function nearCapital(x, y)
+		local i = 1;
+		while i <= #starts do
+			if Map.PlotDistance(starts[i][1], starts[i][2], x, y) <= 3 then
+				return true
+			end
+			i = i + 1;
+		end
+		return false
+	end
+
 	local y = 0;
 	while y < iH do
 		local x = 0;
 		while x <= maxX do
 			local plot = Map.GetPlot(x, y);
-			if plot ~= nil then
+			if plot ~= nil and nearCapital(x, y) == false then
 				local res = plot:GetResourceType(-1);
 				if res ~= -1 and Game.GetResourceUsageType(res) == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
 					if ShoresLuxPlotOk(plot) == false then
@@ -12049,11 +12226,23 @@ function ShoresBuildIslandSummary()
 			local id = ShoresIslandIdAt(x, y, iW);
 			if id ~= 0 and ShoresPlotIsStartLegal(x, y) then
 				local a = acc[id];
+				-- Capitals must be coastal, so a coastal tile always beats an
+				-- inland one; among coastal tiles, nearest the island centre.
+				local coastal = ShoresPlotIsCoastal(x, y, iW, iH);
 				local d = math.abs(y - a.cy);
-				if a.bestX == nil or d < a.bestD then
+				local better = false;
+				if a.bestX == nil then
+					better = true;
+				elseif coastal and a.bestCoastal == false then
+					better = true;
+				elseif coastal == a.bestCoastal and d < a.bestD then
+					better = true;
+				end
+				if better then
 					a.bestX = x;
 					a.bestY = y;
 					a.bestD = d;
+					a.bestCoastal = coastal;
 				end
 			end
 			x = x + 1;
@@ -12185,4 +12374,94 @@ function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, mustB
 		.. " island=" .. tostring(id)
 		.. " size=" .. tostring(shoresIslandSize[id] or 0));
 	return true, false
+end
+------------------------------------------------------------------------------
+-- Fish count is a whole-map target, but only the west half is generated - the
+-- mirror doubles whatever is there. So aim for half the target on the west and
+-- let the copy make up the rest.
+local fishTargetResolved = false;
+local fishTarget = 15;
+function ResolveFishTarget()
+	if fishTargetResolved then
+		return fishTarget;
+	end
+	fishTargetResolved = true;
+	local ops = Map.GetCustomOption(OPT_FISH);
+	if ops == FISH_LOW then
+		fishTarget = 10;
+	elseif ops == FISH_HIGH then
+		fishTarget = 20;
+	else
+		fishTarget = 15;
+	end
+	print("Fish target (whole map):", fishTarget);
+	return fishTarget;
+end
+------------------------------------------------------------------------------
+function ShoresFishHalfTarget()
+	local total = ResolveFishTarget();
+	if DEF_MIRRORED == 1 then
+		return math.floor(total / 2 + 0.5);
+	end
+	return total;
+end
+------------------------------------------------------------------------------
+-- Bring the west half to the fish quota, adding on empty coastal water and
+-- trimming the surplus at random. Runs before the mirror so the east half
+-- inherits the result exactly.
+function EnforceFishCount()
+	local fishID = GameInfoTypes["RESOURCE_FISH"];
+	if fishID == nil then
+		return
+	end
+	local iW, iH = Map.GetGridSize();
+	local maxX = math.floor(iW * 0.5);
+	if DEF_MIRRORED ~= 1 then
+		maxX = iW - 1;
+	end
+	local want = ShoresFishHalfTarget();
+
+	local have = {};
+	local free = {};
+	local y = 0;
+	while y < iH do
+		local x = 0;
+		while x <= maxX do
+			local plot = Map.GetPlot(x, y);
+			if plot ~= nil and plot:IsWater() then
+				local res = plot:GetResourceType(-1);
+				if res == fishID then
+					table.insert(have, plot);
+				elseif res == -1 and plot:IsAdjacentToLand()
+					and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
+					if plot:CanHaveResource(fishID) then
+						table.insert(free, plot);
+					end
+				end
+			end
+			x = x + 1;
+		end
+		y = y + 1;
+	end
+
+	local added = 0;
+	local removed = 0;
+	if #have < want then
+		free = GetShuffledCopyOfTable(free);
+		local i = 1;
+		while i <= #free and (#have + added) < want do
+			free[i]:SetResourceType(fishID, 1);
+			added = added + 1;
+			i = i + 1;
+		end
+	elseif #have > want then
+		have = GetShuffledCopyOfTable(have);
+		local i = want + 1;
+		while i <= #have do
+			have[i]:SetResourceType(-1, 0);
+			removed = removed + 1;
+			i = i + 1;
+		end
+	end
+	print("Fish: half-target", want, " had", #have, " added", added, " removed", removed);
 end
