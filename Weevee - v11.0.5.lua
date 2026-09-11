@@ -351,6 +351,7 @@ function GetBarrierConfig()
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
 			westRim = 4,
+			pocketFill = true,
 			startBackMin = 7,
 			bandWidth = 3,
 			dryMargin = 0,
@@ -11003,9 +11004,11 @@ function ShoresBuildPlotTypes(plotTypes, iW, iH)
 		end
 	end
 
-	-- 3b. Soak up leftover water so the field reads as an archipelago rather
-	--     than islands adrift in open sea.
-	ShoresFillPockets(plotTypes, iW, iH);
+	-- 3b. Optionally soak up leftover water. With this off the islands keep
+	--     the size they grew to and the field stays open sea between them.
+	if cfg.pocketFill ~= false then
+		ShoresFillPockets(plotTypes, iW, iH);
+	end
 
 	-- 4. Lakes, before the qualifying count - a carve can drop a 10 to a 9.
 	local nLakes = ShoresCarveIslandLakes(plotTypes, iW, iH);
