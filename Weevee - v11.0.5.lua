@@ -11280,10 +11280,21 @@ function AddShoresLayout()
 	WeeveeDbg("AddShoresLayout done");
 end
 ------------------------------------------------------------------------------
--- Adjacent to the sea. Island lakes deliberately do NOT count: a capital that
--- only touches a lake cannot build a harbour or put out a boat, which is the
--- whole point of guaranteeing a coastal start.
+-- Coastal in the engine's sense: adjacent to a body of water bigger than a
+-- lake. A lakeside tile is perfectly fine to spawn on as long as it also
+-- touches the sea - what this rules out is a tile whose only water is a lake,
+-- where a capital can neither build a harbour nor put a boat out.
+--
+-- Falls back to a neighbour scan if IsCoastalLand is unavailable, so a missing
+-- engine method cannot leave every island unstartable.
 function ShoresPlotIsCoastal(x, y, iW, iH)
+	local plot = Map.GetPlot(x, y);
+	if plot == nil then
+		return false
+	end
+	if plot.IsCoastalLand ~= nil then
+		return plot:IsCoastalLand();
+	end
 	local n = FrostyHexNeighbors(x, y);
 	local i = 1;
 	while i <= #n do
