@@ -351,6 +351,7 @@ function GetBarrierConfig()
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
 			westRim = 2,
+			startBackMin = 7,
 			bandWidth = 3,
 			dryMargin = 0,
 			islandSizeMin = 14,
@@ -11540,6 +11541,18 @@ function ShoresPlotIsStartLegal(x, y)
 	end
 	if StartYAllowed(y, iH) == false then
 		return false
+	end
+	-- Keep capitals off the back edge. Measured from each half's own outer
+	-- edge, so the east side is held off the far east the same way.
+	local cfgBack = GetBarrierConfig();
+	local back = 0;
+	if cfgBack ~= nil and cfgBack.startBackMin ~= nil then
+		back = cfgBack.startBackMin;
+	end
+	if back > 0 then
+		if x < back or x > (iW - 1 - back) then
+			return false
+		end
 	end
 	local plot = Map.GetPlot(x, y);
 	if plot == nil or plot:IsWater() then
