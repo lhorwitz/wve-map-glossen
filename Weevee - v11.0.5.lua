@@ -11897,36 +11897,66 @@ function ShoresSweepFarLuxuries()
 		return false
 	end
 
-	-- Nearest empty land tile that satisfies the coast rule and will accept
-	-- this resource. Relocating keeps the luxury on the map, so the totals
-	-- the region and capital passes balanced are preserved.
+	-- Eligibility is computed once for the whole half, not per luxury: the
+	-- water test and the capital test are the expensive parts and neither
+	-- depends on which resource is being moved.
+	local okTile = {};
+	local ty = 0;
+	while ty < iH do
+		local tx = 0;
+		while tx <= maxX do
+			local idx = ty * iW + tx + 1;
+			local q = Map.GetPlot(tx, ty);
+			if q ~= nil and q:IsWater() == false
+				and q:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+				and q:GetResourceType(-1) == -1
+				and nearCapital(tx, ty) == false
+				and ShoresLuxPlotOk(q) then
+				okTile[idx] = true;
+			end
+			tx = tx + 1;
+		end
+		ty = ty + 1;
+	end
+
+	-- Breadth-first from the stranded tile, so the first eligible tile found is
+	-- the nearest one. CanHaveResource is the only per-resource test and it is
+	-- only paid on tiles that already passed everything else.
 	local function findHome(resID, fromX, fromY)
-		local bestX, bestY;
-		local bestD = 9999;
-		local yy = 0;
-		while yy < iH do
-			local xx = 0;
-			while xx <= maxX do
-				if nearCapital(xx, yy) == false then
-					local q = Map.GetPlot(xx, yy);
-					if q ~= nil and q:IsWater() == false
-						and q:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
-						and q:GetResourceType(-1) == -1
-						and ShoresLuxPlotOk(q)
-						and q:CanHaveResource(resID) then
-						local d = Map.PlotDistance(fromX, fromY, xx, yy);
-						if d < bestD then
-							bestD = d;
-							bestX = xx;
-							bestY = yy;
-						end
+		local seen = {};
+		local q = {};
+		table.insert(q, {fromX, fromY});
+		seen[fromY * iW + fromX + 1] = true;
+		local qi = 1;
+		local guard = 0;
+		while qi <= #q and guard < 1200 do
+			guard = guard + 1;
+			local px = q[qi][1];
+			local py = q[qi][2];
+			qi = qi + 1;
+			local idx = py * iW + px + 1;
+			if okTile[idx] == true then
+				local qp = Map.GetPlot(px, py);
+				if qp ~= nil and qp:CanHaveResource(resID) then
+					return px, py, idx;
+				end
+			end
+			local n = FrostyHexNeighbors(px, py);
+			local i = 1;
+			while i <= #n do
+				local nx = px + n[i][1];
+				local ny = py + n[i][2];
+				if nx >= 0 and nx <= maxX and ny >= 0 and ny < iH then
+					local nidx = ny * iW + nx + 1;
+					if seen[nidx] == nil then
+						seen[nidx] = true;
+						table.insert(q, {nx, ny});
 					end
 				end
-				xx = xx + 1;
+				i = i + 1;
 			end
-			yy = yy + 1;
 		end
-		return bestX, bestY;
+		return nil;
 	end
 
 	local y = 0;
@@ -11942,10 +11972,11 @@ function ShoresSweepFarLuxuries()
 						if amt == nil or amt < 1 then
 							amt = 1;
 						end
-						local nx, ny = findHome(res, x, y);
+						local nx, ny, nidx = findHome(res, x, y);
 						if nx ~= nil then
 							plot:SetResourceType(-1, 0);
 							Map.GetPlot(nx, ny):SetResourceType(res, amt);
+							okTile[nidx] = nil;
 							moved = moved + 1;
 						else
 							-- Nowhere legal to put it. Leaving it in place beats
