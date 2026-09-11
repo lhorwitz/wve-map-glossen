@@ -11611,6 +11611,13 @@ function ShoresPlotIsStartLegal(x, y)
 	if (shoresIslandSize[id] or 0) < ShoresMinStartLandmass() then
 		return false
 	end
+	-- Coastal is a requirement, not a preference. The island summary scores for
+	-- it, but ShoresBestFreeIslandPlot and ShoresNearestLegalPlot do not consult
+	-- the summary - they only ask whether a tile is legal, so without this a
+	-- relocation could drop a capital on a lakeside tile with no sea access.
+	if ShoresPlotIsCoastal(x, y, iW, iH) == false then
+		return false
+	end
 	return true
 end
 ------------------------------------------------------------------------------
