@@ -71,7 +71,6 @@ local OPT_FRONT_MOUNTAIN = 4;
 local OPT_CANVAS_SHRINK = 5;
 local OPT_EXPLO_BALANCE = 6;
 local OPT_LAKES = 7;
-local OPT_FISH = 8;
 local CANVAS_SHRINK_NO = 1;
 local CANVAS_SHRINK_YES = 2;
 local EXPLO_BALANCE_NO = 1;
@@ -79,9 +78,6 @@ local EXPLO_BALANCE_YES = 2;
 local LAKES_LOW = 1;
 local LAKES_MEDIUM = 2;
 local LAKES_HIGH = 3;
-local FISH_LOW = 1;
-local FISH_MEDIUM = 2;
-local FISH_HIGH = 3;
 local SPLIT_SNOW = 1;
 local SPLIT_SNOW_V2 = 2;
 local SPLIT_WETLAND = 3;
@@ -208,16 +204,6 @@ function GetMapScriptInfo()
 				},
 				DefaultValue = 2,
 				SortPriority = -93,
-			},
-			{
-				Name = "[COLOR_HIGHLIGHT_TEXT]Fish[ENDCOLOR]",
-				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]Low[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Medium[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT]High[ENDCOLOR]",
-				},
-				DefaultValue = 2,
-				SortPriority = -92,
 			},
 		},
 	}
@@ -10435,7 +10421,6 @@ function StartPlotSystem()
 	WeeveeDbgCall("ShoresSweepFarLuxuries", ShoresSweepFarLuxuries);
 	WeeveeDbgCall("ShoresBoostIslandResources", ShoresBoostIslandResources);
 	WeeveeDbgCall("ShoresPlantIslets", ShoresPlantIslets);
-	WeeveeDbgCall("EnforceFishCount", EnforceFishCount);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -12374,94 +12359,4 @@ function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, mustB
 		.. " island=" .. tostring(id)
 		.. " size=" .. tostring(shoresIslandSize[id] or 0));
 	return true, false
-end
-------------------------------------------------------------------------------
--- Fish count is a whole-map target, but only the west half is generated - the
--- mirror doubles whatever is there. So aim for half the target on the west and
--- let the copy make up the rest.
-local fishTargetResolved = false;
-local fishTarget = 15;
-function ResolveFishTarget()
-	if fishTargetResolved then
-		return fishTarget;
-	end
-	fishTargetResolved = true;
-	local ops = Map.GetCustomOption(OPT_FISH);
-	if ops == FISH_LOW then
-		fishTarget = 10;
-	elseif ops == FISH_HIGH then
-		fishTarget = 20;
-	else
-		fishTarget = 15;
-	end
-	print("Fish target (whole map):", fishTarget);
-	return fishTarget;
-end
-------------------------------------------------------------------------------
-function ShoresFishHalfTarget()
-	local total = ResolveFishTarget();
-	if DEF_MIRRORED == 1 then
-		return math.floor(total / 2 + 0.5);
-	end
-	return total;
-end
-------------------------------------------------------------------------------
--- Bring the west half to the fish quota, adding on empty coastal water and
--- trimming the surplus at random. Runs before the mirror so the east half
--- inherits the result exactly.
-function EnforceFishCount()
-	local fishID = GameInfoTypes["RESOURCE_FISH"];
-	if fishID == nil then
-		return
-	end
-	local iW, iH = Map.GetGridSize();
-	local maxX = math.floor(iW * 0.5);
-	if DEF_MIRRORED ~= 1 then
-		maxX = iW - 1;
-	end
-	local want = ShoresFishHalfTarget();
-
-	local have = {};
-	local free = {};
-	local y = 0;
-	while y < iH do
-		local x = 0;
-		while x <= maxX do
-			local plot = Map.GetPlot(x, y);
-			if plot ~= nil and plot:IsWater() then
-				local res = plot:GetResourceType(-1);
-				if res == fishID then
-					table.insert(have, plot);
-				elseif res == -1 and plot:IsAdjacentToLand()
-					and plot:GetFeatureType() == FeatureTypes.NO_FEATURE then
-					if plot:CanHaveResource(fishID) then
-						table.insert(free, plot);
-					end
-				end
-			end
-			x = x + 1;
-		end
-		y = y + 1;
-	end
-
-	local added = 0;
-	local removed = 0;
-	if #have < want then
-		free = GetShuffledCopyOfTable(free);
-		local i = 1;
-		while i <= #free and (#have + added) < want do
-			free[i]:SetResourceType(fishID, 1);
-			added = added + 1;
-			i = i + 1;
-		end
-	elseif #have > want then
-		have = GetShuffledCopyOfTable(have);
-		local i = want + 1;
-		while i <= #have do
-			have[i]:SetResourceType(-1, 0);
-			removed = removed + 1;
-			i = i + 1;
-		end
-	end
-	print("Fish: half-target", want, " had", #have, " added", added, " removed", removed);
 end
