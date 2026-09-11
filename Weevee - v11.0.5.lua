@@ -350,7 +350,7 @@ function GetBarrierConfig()
 			forestPct = 10,
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
-			westRim = 2,
+			westRim = 4,
 			startBackMin = 7,
 			bandWidth = 3,
 			dryMargin = 0,
