@@ -86,7 +86,8 @@ local SPLIT_WASTELAND = 5;
 local SPLIT_PEAKS = 6;
 local SPLIT_FROSTY = 7;
 local SPLIT_SHORES = 8;
-local SPLIT_RANDOM = 9;
+local SPLIT_ARCHIPELAGO = 9;
+local SPLIT_RANDOM = 10;
 local WRAP_NO = 1;
 local WRAP_YES = 2;
 local WRAP_RANDOM = 3;
@@ -136,9 +137,10 @@ function GetMapScriptInfo()
 					"[COLOR_HIGHLIGHT_TEXT]Peaky[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Frosty[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Large Islands[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Archipelago[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Random (sans Snow)[ENDCOLOR]"
 				},
-				DefaultValue = 9,
+				DefaultValue = 10,
 				SortPriority = -99,
 			},
 			{
@@ -243,8 +245,8 @@ function ResolveWrap()
 		print("Barrier wrap: ignored (legacy snow)");
 		return barrierWrap;
 	end
-	if ResolveBarrierSplit() == SPLIT_SHORES then
-		-- A wrap seam would put a second barrier where Shores needs open ocean.
+	if ResolveBarrierSplit() == SPLIT_SHORES or ResolveBarrierSplit() == SPLIT_ARCHIPELAGO then
+		-- A wrap seam would put a second barrier where these need open ocean.
 		barrierWrap = false;
 		print("Barrier wrap: ignored (shores)");
 		return barrierWrap;
@@ -340,8 +342,8 @@ function GetBarrierConfig()
 			chaoticMountains = true,
 		};
 	end
-	if ops == SPLIT_SHORES then
-		return {
+	if ops == SPLIT_SHORES or ops == SPLIT_ARCHIPELAGO then
+		local t = {
 			kind = "shores",
 			wrap = false,
 			mountainPct = 2,
@@ -370,6 +372,13 @@ function GetBarrierConfig()
 			isletStrategicPct = 60,
 			islandResourcePct = 62,
 		};
+		if ops == SPLIT_ARCHIPELAGO then
+			-- Islands keep the size they grow to and the water between them
+			-- stays open, so the field reads as scattered islands rather than
+			-- a packed coastline. Everything else is shared.
+			t.pocketFill = false;
+		end
+		return t;
 	end
 	return nil;
 end
@@ -480,8 +489,15 @@ function IsOldSnow()
 	return ResolveBarrierSplit() == SPLIT_SNOW;
 end
 ------------------------------------------------------------------------------
+-- True for the whole Shores family. Large Islands and Archipelago share one
+-- generator and one cfg.kind; they differ only in the values below.
 function IsShores()
-	return ResolveBarrierSplit() == SPLIT_SHORES;
+	local sp = ResolveBarrierSplit();
+	return sp == SPLIT_SHORES or sp == SPLIT_ARCHIPELAGO;
+end
+------------------------------------------------------------------------------
+function IsArchipelago()
+	return ResolveBarrierSplit() == SPLIT_ARCHIPELAGO;
 end
 ------------------------------------------------------------------------------
 function IsSnowBarrier()
