@@ -12390,23 +12390,22 @@ function ShoresBuildIslandSummary()
 			local id = ShoresIslandIdAt(x, y, iW);
 			if id ~= 0 and ShoresPlotIsStartLegal(x, y) then
 				local a = acc[id];
-				-- Capitals must be coastal, so a coastal tile always beats an
-				-- inland one; among coastal tiles, nearest the island centre.
-				local coastal = ShoresPlotIsCoastal(x, y, iW, iH);
-				local d = math.abs(y - a.cy);
-				local better = false;
-				if a.bestX == nil then
-					better = true;
-				elseif coastal and a.bestCoastal == false then
-					better = true;
-				elseif coastal == a.bestCoastal and d < a.bestD then
-					better = true;
+				-- Ranked: coastal above all, then how much workable land sits
+				-- in the first ring, then nearest the island's centre. Choosing
+				-- a tile that already has land around it is what keeps capitals
+				-- off the thin arms, and it costs nothing at generation time -
+				-- better than terraforming afterwards, which can only fill
+				-- water that touches nothing else.
+				local score = 0;
+				if ShoresPlotIsCoastal(x, y, iW, iH) then
+					score = score + 100000;
 				end
-				if better then
+				score = score + ShoresCountWorkableRing(x, y, iW, iH) * 1000;
+				score = score - math.abs(y - a.cy) * 10;
+				if a.bestScore == nil or score > a.bestScore then
 					a.bestX = x;
 					a.bestY = y;
-					a.bestD = d;
-					a.bestCoastal = coastal;
+					a.bestScore = score;
 				end
 			end
 			x = x + 1;
@@ -12607,6 +12606,37 @@ function ShoresFillWouldConnect(x, y, iW, iH, ownId)
 	return false
 end
 ------------------------------------------------------------------------------
+-- Filling a lake costs the capital its fresh water, so send a river from the
+-- filled tile down to the sea. Same idiom AddRivers uses: start at the inland
+-- corner and let DoRiver walk downhill. nextRiverID is a global initialised in
+-- DEFMapGeneratorW8, so this is safe to call after AddRivers has finished.
+function ShoresRunRiverToCoast(plot, iW, iH)
+	if plot == nil then
+		return false
+	end
+	local corner = plot:GetInlandCorner();
+	if corner == nil then
+		return false
+	end
+	local sx = corner:GetX();
+	local sy = corner:GetY();
+	local dir;
+	if sy < iH / 2 then
+		if sx < iW / 2 then
+			dir = FlowDirectionTypes.FLOWDIRECTION_NORTHWEST;
+		else
+			dir = FlowDirectionTypes.FLOWDIRECTION_NORTHEAST;
+		end
+	else
+		if sx < iW / 2 then
+			dir = FlowDirectionTypes.FLOWDIRECTION_SOUTHWEST;
+		else
+			dir = FlowDirectionTypes.FLOWDIRECTION_SOUTHEAST;
+		end
+	end
+	return pcall(DoRiver, corner, nil, dir, nil);
+end
+------------------------------------------------------------------------------
 function ShoresCountWorkableRing(x, y, iW, iH)
 	local n = FrostyHexNeighbors(x, y);
 	local good = 0;
@@ -12649,6 +12679,7 @@ function ShoresEnsureCapitalLand()
 	local atollID = GetShoresAtollFeatureID();
 	local flattened = 0;
 	local raised = 0;
+	local rivers = 0;
 
 	local starts = GetMajorStartPlots();
 	local si = 1;
@@ -12757,6 +12788,7 @@ function ShoresEnsureCapitalLand()
 					-- the water that is left, turning it into a lake and
 					-- quietly stranding the capital inland. Counting remaining
 					-- sea tiles does not catch that, so convert and check.
+					local wasLake = pick:IsLake();
 					local oldRes = pick:GetResourceType(-1);
 					local oldAmt = pick:GetNumResource();
 					local oldFeat = pick:GetFeatureType();
@@ -12819,13 +12851,20 @@ function ShoresEnsureCapitalLand()
 					elseif wasBonus then
 						ShoresGiveResourceOfClass(pick, "RESOURCECLASS_BONUS", "RESOURCE_FISH", 1);
 					end
+					if wasLake then
+						-- Hand back the fresh water the lake was providing.
+						if ShoresRunRiverToCoast(pick, iW, iH) then
+							rivers = rivers + 1;
+						end
+					end
 					raised = raised + 1;
 				end
 			end
 		end
 	end
 	if flattened > 0 or raised > 0 then
-		print("Shores capital ground: flattened", flattened, "mountains, raised", raised, "sea tiles");
+		print("Shores capital ground: flattened", flattened, "mountains, raised", raised,
+			"water tiles,", rivers, "rivers from filled lakes");
 	end
 	WeeveeDbg("ShoresEnsureCapitalLand done flattened=" .. tostring(flattened)
 		.. " raised=" .. tostring(raised));
