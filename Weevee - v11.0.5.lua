@@ -11280,8 +11280,9 @@ function AddShoresLayout()
 	WeeveeDbg("AddShoresLayout done");
 end
 ------------------------------------------------------------------------------
--- Any adjacent water, including island lakes. plot:IsCoastalLand() only counts
--- water bodies above the lake threshold, so it would miss a lakeside tile.
+-- Adjacent to the sea. Island lakes deliberately do NOT count: a capital that
+-- only touches a lake cannot build a harbour or put out a boat, which is the
+-- whole point of guaranteeing a coastal start.
 function ShoresPlotIsCoastal(x, y, iW, iH)
 	local n = FrostyHexNeighbors(x, y);
 	local i = 1;
@@ -11290,7 +11291,7 @@ function ShoresPlotIsCoastal(x, y, iW, iH)
 		local ny = y + n[i][2];
 		if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
 			local p = Map.GetPlot(nx, ny);
-			if p ~= nil and p:IsWater() then
+			if p ~= nil and p:IsWater() and p:IsLake() == false then
 				return true
 			end
 		end
