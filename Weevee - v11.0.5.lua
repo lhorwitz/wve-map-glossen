@@ -372,7 +372,7 @@ function GetBarrierConfig()
 			isletStrategicPct = 60,
 			isletWant = 4,
 			isletHillPct = 60,
-			startMinLandNeighbors = 3,
+			startMinLandRing = 3,
 			islandResourcePct = 62,
 		};
 		if ops == SPLIT_ARCHIPELAGO then
@@ -10461,6 +10461,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("ShoresSweepFarLuxuries", ShoresSweepFarLuxuries);
 	WeeveeDbgCall("ShoresBoostIslandResources", ShoresBoostIslandResources);
 	WeeveeDbgCall("ShoresPlantIslets", ShoresPlantIslets);
+	WeeveeDbgCall("ShoresEnsureCapitalLand", ShoresEnsureCapitalLand);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -11584,35 +11585,6 @@ function ShoresPlotIsStartLegal(x, y)
 	if StartYAllowed(y, iH) == false then
 		return false
 	end
-	-- A capital needs land to work, not a spit sticking into the sea. Count
-	-- neighbours that are land and not mountain; a tile on a one-wide arm has
-	-- at most two and is rejected.
-	local cfgN = GetBarrierConfig();
-	local needLand = 0;
-	if cfgN ~= nil and cfgN.startMinLandNeighbors ~= nil then
-		needLand = cfgN.startMinLandNeighbors;
-	end
-	if needLand > 0 then
-		local nb = FrostyHexNeighbors(x, y);
-		local good = 0;
-		local ni = 1;
-		while ni <= #nb do
-			local nx = x + nb[ni][1];
-			local ny = y + nb[ni][2];
-			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
-				local np = Map.GetPlot(nx, ny);
-				if np ~= nil and np:IsWater() == false
-					and np:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
-					good = good + 1;
-				end
-			end
-			ni = ni + 1;
-		end
-		if good < needLand then
-			return false
-		end
-	end
-
 	-- Keep capitals off the back edge. Measured from each half's own outer
 	-- edge, so the east side is held off the far east the same way.
 	local cfgBack = GetBarrierConfig();
@@ -12566,4 +12538,248 @@ function AssignStartingPlots:FindStartWithoutRegardToAreaID(region_number, mustB
 		.. " island=" .. tostring(id)
 		.. " size=" .. tostring(shoresIslandSize[id] or 0));
 	return true, false
+end
+------------------------------------------------------------------------------
+-- Resource ids of one class, cached. Used when a terraformed tile has to give
+-- back a resource of the same kind it destroyed.
+local shoresClassCache = {};
+function ShoresResourceIDsOfClass(className, excludeType)
+	local key = tostring(className) .. "/" .. tostring(excludeType);
+	if shoresClassCache[key] ~= nil then
+		return shoresClassCache[key];
+	end
+	local out = {};
+	for row in GameInfo.Resources() do
+		if row.ResourceClassType == className and row.Type ~= excludeType then
+			local id = GameInfoTypes[row.Type];
+			if id ~= nil then
+				table.insert(out, id);
+			end
+		end
+	end
+	shoresClassCache[key] = out;
+	return out;
+end
+------------------------------------------------------------------------------
+-- Put a resource of the given class on the plot, retrying because
+-- CanHaveResource is terrain and plot-type sensitive.
+function ShoresGiveResourceOfClass(plot, className, excludeType, amount)
+	if plot == nil then
+		return false
+	end
+	local pool = ShoresResourceIDsOfClass(className, excludeType);
+	if #pool < 1 then
+		return false
+	end
+	local tries = 0;
+	while tries < 12 do
+		tries = tries + 1;
+		local id = pool[1 + Map.Rand(#pool, "Shores Reseed Resource")];
+		if plot:CanHaveResource(id) then
+			plot:SetResourceType(id, amount or 1);
+			return true
+		end
+	end
+	return false
+end
+------------------------------------------------------------------------------
+function ShoresCountWorkableRing(x, y, iW, iH)
+	local n = FrostyHexNeighbors(x, y);
+	local good = 0;
+	local i = 1;
+	while i <= #n do
+		local nx = x + n[i][1];
+		local ny = y + n[i][2];
+		if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+			local p = Map.GetPlot(nx, ny);
+			if p ~= nil and p:IsWater() == false
+				and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+				good = good + 1;
+			end
+		end
+		i = i + 1;
+	end
+	return good;
+end
+------------------------------------------------------------------------------
+-- A capital can land on a thin arm with almost nothing to work. Rather than
+-- refuse those tiles - which costs start supply on a map that has little to
+-- spare - fix the ground afterwards.
+--
+-- First flatten any mountain in the first ring to a hill and give it stone.
+-- If that is still not enough, raise sea tiles into hills of the capital's own
+-- terrain, handing back a resource of whatever class the water tile held.
+-- Runs before the mirror, so the east half inherits the same ground.
+function ShoresEnsureCapitalLand()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	local want = cfg.startMinLandRing or 3;
+	if want < 1 then
+		return
+	end
+	WeeveeDbg("ShoresEnsureCapitalLand");
+	local iW, iH = Map.GetGridSize();
+	local stoneID = GameInfoTypes["RESOURCE_STONE"];
+	local atollID = GetShoresAtollFeatureID();
+	local flattened = 0;
+	local raised = 0;
+
+	local starts = GetMajorStartPlots();
+	local si = 1;
+	while si <= #starts do
+		local sp = starts[si];
+		si = si + 1;
+		if sp ~= nil then
+			local sx = sp:GetX();
+			local sy = sp:GetY();
+			-- West half only; the mirror copies this to the east start.
+			if sx <= math.floor(iW * 0.5) then
+				local capTerrain = sp:GetTerrainType();
+
+				-- Pass one: mountains in the ring become hills with stone.
+				if ShoresCountWorkableRing(sx, sy, iW, iH) < want then
+					local n = FrostyHexNeighbors(sx, sy);
+					local i = 1;
+					while i <= #n and ShoresCountWorkableRing(sx, sy, iW, iH) < want do
+						local nx = sx + n[i][1];
+						local ny = sy + n[i][2];
+						if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+							local p = Map.GetPlot(nx, ny);
+							if p ~= nil and p:GetPlotType() == PlotTypes.PLOT_MOUNTAIN then
+								p:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+								if stoneID ~= nil and p:GetResourceType(-1) == -1
+									and p:CanHaveResource(stoneID) then
+									p:SetResourceType(stoneID, 1);
+								end
+								flattened = flattened + 1;
+							end
+						end
+						i = i + 1;
+					end
+				end
+
+				-- Pass two: raise sea into hills, keeping the capital coastal.
+				local guard = 0;
+				while ShoresCountWorkableRing(sx, sy, iW, iH) < want and guard < 6 do
+					guard = guard + 1;
+					-- Collect water neighbours, and count how many are sea, so
+					-- the capital is never cut off from the ocean.
+					local n = FrostyHexNeighbors(sx, sy);
+					local water = {};
+					local seaCount = 0;
+					local i = 1;
+					while i <= #n do
+						local nx = sx + n[i][1];
+						local ny = sy + n[i][2];
+						if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+							local p = Map.GetPlot(nx, ny);
+							if p ~= nil and p:IsWater() then
+								table.insert(water, p);
+								if p:IsLake() == false then
+									seaCount = seaCount + 1;
+								end
+							end
+						end
+						i = i + 1;
+					end
+					if #water < 1 then
+						break
+					end
+					water = GetShuffledCopyOfTable(water);
+					local pick = nil;
+					local wi = 1;
+					while wi <= #water do
+						local cand = water[wi];
+						local isSea = (cand:IsLake() == false);
+						-- Never take the last sea tile; the capital has to stay
+						-- coastal, which is the point of the start rule.
+						if (isSea == false) or seaCount > 1 then
+							pick = cand;
+							break
+						end
+						wi = wi + 1;
+					end
+					if pick == nil then
+						break
+					end
+
+					-- What was there decides what the new hill gives back, and
+					-- doubles as an undo record: filling one tile can enclose
+					-- the water that is left, turning it into a lake and
+					-- quietly stranding the capital inland. Counting remaining
+					-- sea tiles does not catch that, so convert and check.
+					local oldRes = pick:GetResourceType(-1);
+					local oldAmt = pick:GetNumResource();
+					local oldFeat = pick:GetFeatureType();
+					local oldPlot = pick:GetPlotType();
+					local oldTerrain = pick:GetTerrainType();
+					local wasBonus = (atollID ~= nil and oldFeat == atollID);
+					local wasStrategic = false;
+					local wasLuxury = false;
+					if oldRes ~= -1 then
+						local usage = Game.GetResourceUsageType(oldRes);
+						if usage == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
+							wasBonus = true;
+						elseif usage == ResourceUsageTypes.RESOURCEUSAGE_STRATEGIC then
+							wasStrategic = true;
+						elseif usage == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
+							wasLuxury = true;
+						end
+					end
+
+					pick:SetResourceType(-1, 0);
+					pick:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
+					pick:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+					pick:SetTerrainType(capTerrain, false, false);
+
+					-- Undo if that cut any capital off from the sea. Checking
+					-- only the one being worked on is not enough: capitals are
+					-- processed in turn and two can share a channel, so filling
+					-- for one can strand another that is already done.
+					local strandedSomeone = false;
+					local ci = 1;
+					while ci <= #starts do
+						if starts[ci] ~= nil and starts[ci]:IsCoastalLand() == false then
+							strandedSomeone = true;
+							break
+						end
+						ci = ci + 1;
+					end
+					if strandedSomeone then
+						pick:SetPlotType(oldPlot, false, false);
+						pick:SetTerrainType(oldTerrain, false, false);
+						pick:SetFeatureType(oldFeat, -1);
+						if oldRes ~= -1 then
+							pick:SetResourceType(oldRes, oldAmt);
+						end
+						break
+					end
+
+					if Map.Rand(100, "Shores Capital Fill Forest") < 40 then
+						if pick:CanHaveFeature(FeatureTypes.FEATURE_FOREST) then
+							pick:SetFeatureType(FeatureTypes.FEATURE_FOREST, -1);
+						end
+					end
+
+					if wasStrategic then
+						-- RUSH is iron and horse. Oil sits in MODERN, so it cannot
+						-- be drawn here and needs no exclusion.
+						ShoresGiveResourceOfClass(pick, "RESOURCECLASS_RUSH", nil, 2);
+					elseif wasLuxury then
+						ShoresGiveResourceOfClass(pick, "RESOURCECLASS_LUXURY", nil, 1);
+					elseif wasBonus then
+						ShoresGiveResourceOfClass(pick, "RESOURCECLASS_BONUS", "RESOURCE_FISH", 1);
+					end
+					raised = raised + 1;
+				end
+			end
+		end
+	end
+	if flattened > 0 or raised > 0 then
+		print("Shores capital ground: flattened", flattened, "mountains, raised", raised, "sea tiles");
+	end
+	WeeveeDbg("ShoresEnsureCapitalLand done flattened=" .. tostring(flattened)
+		.. " raised=" .. tostring(raised));
 end
