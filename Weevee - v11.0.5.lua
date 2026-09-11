@@ -156,11 +156,11 @@ function GetMapScriptInfo()
 			{
 				Name = "[COLOR_HIGHLIGHT_TEXT]World Wrap[ENDCOLOR]",
 				Values = {
-					"[COLOR_HIGHLIGHT_TEXT]No wrap[ENDCOLOR]",
-					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] Wrap[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT][ICON_CAPITAL] No wrap[ENDCOLOR]",
+					"[COLOR_HIGHLIGHT_TEXT]Wrap[ENDCOLOR]",
 					"[COLOR_HIGHLIGHT_TEXT]Random[ENDCOLOR]",
 				},
-				DefaultValue = 2,
+				DefaultValue = 1,
 				SortPriority = -97,
 			},
 			{
