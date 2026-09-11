@@ -350,6 +350,7 @@ function GetBarrierConfig()
 			forestPct = 10,
 			oasisPctOfFlat = 0,
 			chaoticMountains = false,
+			westRim = 2,
 			bandWidth = 3,
 			dryMargin = 0,
 			islandSizeMin = 14,
@@ -1913,6 +1914,16 @@ end
 ------------------------------------------------------------------------------
 function ShoresSeaHiX(iW)
 	return ShoresBandLoX(iW) - 1;
+end
+------------------------------------------------------------------------------
+-- Columns of open water held back at the west edge, so the map ends in ocean
+-- and coast the way the non-island climates do rather than in a cliff of land.
+function ShoresWestRim(iW)
+	local cfg = GetBarrierConfig();
+	if cfg ~= nil and cfg.westRim ~= nil then
+		return cfg.westRim;
+	end
+	return 2;
 end
 ------------------------------------------------------------------------------
 function ShoresDryLoX(iW)
@@ -10559,7 +10570,7 @@ function ShoresIslandIdAt(x, y, iW)
 end
 ------------------------------------------------------------------------------
 function ShoresInField(x, y, iW, iH)
-	return x >= 0 and x <= ShoresSeaHiX(iW) and y >= 1 and y < iH - 1;
+	return x >= ShoresWestRim(iW) and x <= ShoresSeaHiX(iW) and y >= 1 and y < iH - 1;
 end
 ------------------------------------------------------------------------------
 -- True when (x,y) can join island ownId without touching a foreign island OR
@@ -11426,6 +11437,14 @@ function AddShoresIslandFeatures()
 					local feat = ShoresBiomeFeature(shoresIslandBiome[id] or 3);
 					if feat ~= FeatureTypes.NO_FEATURE and plot:CanHaveFeature(feat) then
 						plot:SetFeatureType(feat, -1);
+						if feat == FeatureTypes.FEATURE_JUNGLE then
+							-- Jungle yields are additive (+1 food, -1 production),
+							-- so on grassland it reads 3 food. Vanilla keeps it at
+							-- 2 by moving jungle tiles to plains in
+							-- AdjustTerrainTypes - which has already run by the
+							-- time this pass fires, so do it here.
+							plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, true);
+						end
 						n = n + 1;
 					end
 				end
@@ -12187,7 +12206,8 @@ function ShoresPlantIslets()
 	local maxTries = nWant * 25 + 40;
 	while placed < nWant and tries < maxTries do
 		tries = tries + 1;
-		local x = 1 + Map.Rand(math.max(1, seaHi), "Shores Islet X");
+		local rim = ShoresWestRim(iW);
+		local x = rim + Map.Rand(math.max(1, seaHi - rim + 1), "Shores Islet X");
 		local y = 1 + Map.Rand(math.max(1, iH - 2), "Shores Islet Y");
 		local plot = Map.GetPlot(x, y);
 		if plot ~= nil and plot:IsWater() and consumed[y * iW + x + 1] ~= true
@@ -12203,7 +12223,7 @@ function ShoresPlantIslets()
 						local nx = x + order[i][1];
 						local ny = y + order[i][2];
 						local q = Map.GetPlot(nx, ny);
-						if q ~= nil and q:IsWater() and nx >= 1 and nx <= seaHi
+						if q ~= nil and q:IsWater() and nx >= ShoresWestRim(iW) and nx <= seaHi
 							and ny >= 1 and ny < iH - 1 then
 							local ok = true;
 							local m = FrostyHexNeighbors(nx, ny);
