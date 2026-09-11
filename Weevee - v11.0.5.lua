@@ -10462,6 +10462,7 @@ function StartPlotSystem()
 	WeeveeDbgCall("ShoresBoostIslandResources", ShoresBoostIslandResources);
 	WeeveeDbgCall("ShoresPlantIslets", ShoresPlantIslets);
 	WeeveeDbgCall("ShoresEnsureCapitalLand", ShoresEnsureCapitalLand);
+	WeeveeDbgCall("ShoresEnsureCapitalFood", ShoresEnsureCapitalFood);
 	WeeveeDbg("before mirror");
 	if DEF_MIRRORED == 1 then
 	------------------------------------------------------------------------------
@@ -12875,4 +12876,145 @@ function ShoresEnsureCapitalLand()
 	end
 	WeeveeDbg("ShoresEnsureCapitalLand done flattened=" .. tostring(flattened)
 		.. " raised=" .. tostring(raised));
+end
+------------------------------------------------------------------------------
+-- Does this tile already give the capital a decent food special? Computed from
+-- the tile's actual yield rather than a list of resource names: "2 food" is the
+-- whole tile (wheat on plains is 1 + 1), it varies by terrain and feature, and
+-- a name list would miss whatever resources a mod has added.
+function ShoresIsFoodSpecial(plot, atollID)
+	if plot == nil or plot:IsWater() and atollID == nil then
+		return false
+	end
+	local qualifies = false;
+	local res = plot:GetResourceType(-1);
+	if res ~= -1 and res ~= GameInfoTypes["RESOURCE_FISH"] then
+		if Game.GetResourceUsageType(res) == ResourceUsageTypes.RESOURCEUSAGE_BONUS then
+			qualifies = true;
+		end
+	end
+	if atollID ~= nil and plot:GetFeatureType() == atollID then
+		qualifies = true;
+	end
+	if qualifies == false then
+		return false
+	end
+	return plot:CalculateYield(YieldTypes.YIELD_FOOD, false) >= 2;
+end
+------------------------------------------------------------------------------
+-- Bonus resources worth trying as a food special, fish excluded.
+local shoresFoodBonusCache = nil;
+function ShoresFoodBonusIDs()
+	if shoresFoodBonusCache ~= nil then
+		return shoresFoodBonusCache;
+	end
+	local out = {};
+	local fishID = GameInfoTypes["RESOURCE_FISH"];
+	for row in GameInfo.Resources() do
+		if row.ResourceClassType == "RESOURCECLASS_BONUS" then
+			local id = GameInfoTypes[row.Type];
+			if id ~= nil and id ~= fishID then
+				table.insert(out, id);
+			end
+		end
+	end
+	shoresFoodBonusCache = out;
+	return out;
+end
+------------------------------------------------------------------------------
+-- Guarantee every capital one two-food special in its first ring. Tries each
+-- bonus on each empty ring tile and keeps the first that actually reaches two
+-- food on that terrain, so the answer is whatever the tile can support rather
+-- than a guess. Runs before the mirror, so the east capital inherits it.
+function ShoresEnsureCapitalFood()
+	local cfg = GetBarrierConfig();
+	if cfg == nil or cfg.kind ~= "shores" then
+		return
+	end
+	WeeveeDbg("ShoresEnsureCapitalFood");
+	local iW, iH = Map.GetGridSize();
+	local atollID = GetShoresAtollFeatureID();
+	local pool = ShoresFoodBonusIDs();
+	local already = 0;
+	local placed = 0;
+	local failed = 0;
+
+	local starts = GetMajorStartPlots();
+	local si = 1;
+	while si <= #starts do
+		local sp = starts[si];
+		si = si + 1;
+		if sp ~= nil and sp:GetX() <= math.floor(iW * 0.5) then
+			local sx = sp:GetX();
+			local sy = sp:GetY();
+			local n = FrostyHexNeighbors(sx, sy);
+
+			local have = false;
+			local i = 1;
+			while i <= #n do
+				local nx = sx + n[i][1];
+				local ny = sy + n[i][2];
+				if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+					if ShoresIsFoodSpecial(Map.GetPlot(nx, ny), atollID) then
+						have = true;
+						break
+					end
+				end
+				i = i + 1;
+			end
+
+			if have then
+				already = already + 1;
+			else
+				-- Empty land tiles first; they take bonuses most readily.
+				local cand = {};
+				i = 1;
+				while i <= #n do
+					local nx = sx + n[i][1];
+					local ny = sy + n[i][2];
+					if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+						local p = Map.GetPlot(nx, ny);
+						if p ~= nil and p:IsWater() == false
+							and p:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+							and p:GetResourceType(-1) == -1 then
+							table.insert(cand, p);
+						end
+					end
+					i = i + 1;
+				end
+				cand = GetShuffledCopyOfTable(cand);
+
+				local done = false;
+				local ci = 1;
+				while ci <= #cand and done == false do
+					local p = cand[ci];
+					local order = GetShuffledCopyOfTable(pool);
+					local bi = 1;
+					while bi <= #order and done == false do
+						local id = order[bi];
+						if p:CanHaveResource(id) then
+							p:SetResourceType(id, 1);
+							if ShoresIsFoodSpecial(p, atollID) then
+								done = true;
+							else
+								-- Right resource, wrong ground: it does not make
+								-- two food here. Put the tile back and move on.
+								p:SetResourceType(-1, 0);
+							end
+						end
+						bi = bi + 1;
+					end
+					ci = ci + 1;
+				end
+				if done then
+					placed = placed + 1;
+				else
+					failed = failed + 1;
+				end
+			end
+		end
+	end
+	print("Shores capital food: had", already, " placed", placed, " none possible", failed);
+	WeeveeDbg("ShoresEnsureCapitalFood done placed=" .. tostring(placed)
+		.. " failed=" .. tostring(failed));
 end
