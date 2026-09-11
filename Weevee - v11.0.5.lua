@@ -370,13 +370,22 @@ function GetBarrierConfig()
 			lakeMaxPerIsland = 2,
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
+			isletWant = 4,
 			islandResourcePct = 62,
 		};
 		if ops == SPLIT_ARCHIPELAGO then
 			-- Islands keep the size they grow to and the water between them
 			-- stays open, so the field reads as scattered islands rather than
-			-- a packed coastline. Everything else is shared.
+			-- a packed coastline.
 			t.pocketFill = false;
+			-- Roughly a third less island tile than Large Islands, so the same
+			-- percentages give visibly less of everything. Raised so a given
+			-- island is as rich to work, not just as rich per tile.
+			t.islandHillPct = 58;
+			t.islandResourcePct = 74;
+			-- Open water between islands is what islets need; Archipelago has
+			-- it, so ask for as many as the field will take.
+			t.isletWant = 16;
 		end
 		return t;
 	end
@@ -12244,7 +12253,11 @@ function ShoresPlantIslets()
 		return true
 	end
 
-	local nWant = 3 + Map.Rand(4, "Shores Islet Count");
+	local nWant = 4;
+	if cfg.isletWant ~= nil then
+		nWant = cfg.isletWant;
+	end
+	nWant = nWant + Map.Rand(3, "Shores Islet Count");
 	local placed = 0;
 	local tries = 0;
 	local maxTries = nWant * 25 + 40;
