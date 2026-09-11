@@ -371,6 +371,8 @@ function GetBarrierConfig()
 			luxWaterDist = 3,
 			isletStrategicPct = 60,
 			isletWant = 4,
+			isletHillPct = 60,
+			startMinLandNeighbors = 3,
 			islandResourcePct = 62,
 		};
 		if ops == SPLIT_ARCHIPELAGO then
@@ -11582,6 +11584,35 @@ function ShoresPlotIsStartLegal(x, y)
 	if StartYAllowed(y, iH) == false then
 		return false
 	end
+	-- A capital needs land to work, not a spit sticking into the sea. Count
+	-- neighbours that are land and not mountain; a tile on a one-wide arm has
+	-- at most two and is rejected.
+	local cfgN = GetBarrierConfig();
+	local needLand = 0;
+	if cfgN ~= nil and cfgN.startMinLandNeighbors ~= nil then
+		needLand = cfgN.startMinLandNeighbors;
+	end
+	if needLand > 0 then
+		local nb = FrostyHexNeighbors(x, y);
+		local good = 0;
+		local ni = 1;
+		while ni <= #nb do
+			local nx = x + nb[ni][1];
+			local ny = y + nb[ni][2];
+			if nx >= 0 and nx < iW and ny >= 0 and ny < iH then
+				local np = Map.GetPlot(nx, ny);
+				if np ~= nil and np:IsWater() == false
+					and np:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN then
+					good = good + 1;
+				end
+			end
+			ni = ni + 1;
+		end
+		if good < needLand then
+			return false
+		end
+	end
+
 	-- Keep capitals off the back edge. Measured from each half's own outer
 	-- edge, so the east side is held off the far east the same way.
 	local cfgBack = GetBarrierConfig();
@@ -12221,19 +12252,35 @@ function ShoresPlantIslets()
 		end
 	end
 
-	local function makeIslet(x, y)
+	-- Returns placed, wasHill. The hill is decided before the resource, since
+	-- CanHaveResource depends on the plot type. ShoresRaiseIslandHills only
+	-- touches tiles with an island id, and islets deliberately have none, so
+	-- without this they come out uniformly flat.
+	local hillPct = 60;
+	if cfg.isletHillPct ~= nil then
+		hillPct = cfg.isletHillPct;
+	end
+	local function makeIslet(x, y, forceHill)
 		local plot = Map.GetPlot(x, y);
 		if plot == nil then
-			return false
+			return false, false
 		end
-		plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		local hill = forceHill == true;
+		if hill == false and Map.Rand(100, "Shores Islet Hill") < hillPct then
+			hill = true;
+		end
+		if hill then
+			plot:SetPlotType(PlotTypes.PLOT_HILLS, false, false);
+		else
+			plot:SetPlotType(PlotTypes.PLOT_LAND, false, false);
+		end
 		plot:SetTerrainType(TerrainTypes.TERRAIN_PLAINS, false, false);
 		plot:SetFeatureType(FeatureTypes.NO_FEATURE, -1);
 		if ShoresPlaceRolledResource(plot, pool) == false then
 			-- Never leave a bare islet; revert rather than ship an empty rock.
 			plot:SetPlotType(PlotTypes.PLOT_OCEAN, false, false);
 			plot:SetTerrainType(TerrainTypes.TERRAIN_COAST, false, false);
-			return false
+			return false, false
 		end
 		-- Deep ocean beside new land looks wrong; GenerateCoasts ran long ago.
 		local n = FrostyHexNeighbors(x, y);
@@ -12250,7 +12297,7 @@ function ShoresPlantIslets()
 			i = i + 1;
 		end
 		markConsumed(x, y);
-		return true
+		return true, hill
 	end
 
 	local nWant = 4;
@@ -12269,7 +12316,8 @@ function ShoresPlantIslets()
 		local plot = Map.GetPlot(x, y);
 		if plot ~= nil and plot:IsWater() and consumed[y * iW + x + 1] ~= true
 			and allWaterNeighbors(x, y) and landWithin(x, y, 3) > 0 then
-			if makeIslet(x, y) then
+			local ok, firstHill = makeIslet(x, y);
+			if ok then
 				placed = placed + 1;
 				-- A paired islet only if the partner is also fully surrounded.
 				if Map.Rand(100, "Shores Islet Pair") < 45 then
@@ -12301,8 +12349,12 @@ function ShoresPlantIslets()
 								end
 								k = k + 1;
 							end
-							if ok and makeIslet(nx, ny) then
-								break
+							if ok then
+								-- Guarantee at least one hill across a 2-tile islet.
+								local made = makeIslet(nx, ny, firstHill == false);
+								if made then
+									break
+								end
 							end
 						end
 						i = i + 1;
