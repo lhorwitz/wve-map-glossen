@@ -11868,11 +11868,13 @@ function ShoresSweepFarLuxuries()
 	end
 	local iW, iH = Map.GetGridSize();
 	local maxX = math.floor(iW * 0.5);
-	local cleared = 0;
+	local moved = 0;
+	local stuck = 0;
 
-	-- Capital work radii are off limits. The start-normalisation code
-	-- guarantees each capital a set of luxuries and strategics; clearing one
-	-- of those would silently break that guarantee.
+	-- Capital work radii are off limits, as source and as destination. The
+	-- start-normalisation code guarantees each capital a set of luxuries and
+	-- strategics; moving one out, or dropping a stray one in, would quietly
+	-- rewrite what that code decided.
 	-- GetMajorStartPlots returns plot objects, not coordinate pairs.
 	local startPlots = GetMajorStartPlots();
 	local starts = {};
@@ -11895,6 +11897,38 @@ function ShoresSweepFarLuxuries()
 		return false
 	end
 
+	-- Nearest empty land tile that satisfies the coast rule and will accept
+	-- this resource. Relocating keeps the luxury on the map, so the totals
+	-- the region and capital passes balanced are preserved.
+	local function findHome(resID, fromX, fromY)
+		local bestX, bestY;
+		local bestD = 9999;
+		local yy = 0;
+		while yy < iH do
+			local xx = 0;
+			while xx <= maxX do
+				if nearCapital(xx, yy) == false then
+					local q = Map.GetPlot(xx, yy);
+					if q ~= nil and q:IsWater() == false
+						and q:GetPlotType() ~= PlotTypes.PLOT_MOUNTAIN
+						and q:GetResourceType(-1) == -1
+						and ShoresLuxPlotOk(q)
+						and q:CanHaveResource(resID) then
+						local d = Map.PlotDistance(fromX, fromY, xx, yy);
+						if d < bestD then
+							bestD = d;
+							bestX = xx;
+							bestY = yy;
+						end
+					end
+				end
+				xx = xx + 1;
+			end
+			yy = yy + 1;
+		end
+		return bestX, bestY;
+	end
+
 	local y = 0;
 	while y < iH do
 		local x = 0;
@@ -11904,8 +11938,21 @@ function ShoresSweepFarLuxuries()
 				local res = plot:GetResourceType(-1);
 				if res ~= -1 and Game.GetResourceUsageType(res) == ResourceUsageTypes.RESOURCEUSAGE_LUXURY then
 					if ShoresLuxPlotOk(plot) == false then
-						plot:SetResourceType(-1, 0);
-						cleared = cleared + 1;
+						local amt = plot:GetNumResource();
+						if amt == nil or amt < 1 then
+							amt = 1;
+						end
+						local nx, ny = findHome(res, x, y);
+						if nx ~= nil then
+							plot:SetResourceType(-1, 0);
+							Map.GetPlot(nx, ny):SetResourceType(res, amt);
+							moved = moved + 1;
+						else
+							-- Nowhere legal to put it. Leaving it in place beats
+							-- deleting it; the map keeps its luxury count and
+							-- one tile sits outside the coast rule.
+							stuck = stuck + 1;
+						end
 					end
 				end
 			end
@@ -11913,8 +11960,8 @@ function ShoresSweepFarLuxuries()
 		end
 		y = y + 1;
 	end
-	if cleared > 0 then
-		print("Shores: cleared", cleared, "luxuries too far from water");
+	if moved > 0 or stuck > 0 then
+		print("Shores: relocated", moved, "luxuries toward the coast;", stuck, "had nowhere to go");
 	end
 end
 ------------------------------------------------------------------------------
